@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">Typo Poster</string>
+    <string name="widget_description">Your note, beautifully displayed</string>
+    <string name="note_placeholder">What\'s on your mind today?</string>
+</resources>
