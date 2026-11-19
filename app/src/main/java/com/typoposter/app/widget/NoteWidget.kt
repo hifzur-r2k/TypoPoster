@@ -29,6 +29,7 @@ import com.typoposter.app.MainActivity
 import com.typoposter.app.R
 import com.typoposter.app.data.Note
 import com.typoposter.app.data.NoteStore
+import com.typoposter.app.date.CountdownHelper
 import com.typoposter.app.theme.TextFormatHelper
 import com.typoposter.app.theme.ThemeEngine
 import kotlinx.coroutines.flow.first
@@ -101,6 +102,38 @@ class NoteWidget : GlanceAppWidget() {
                 }
             }
             NoteWidget().update(context, glanceId)
+        }
+
+        /**
+         * Refreshes all active widgets from current notes in NoteStore.
+         * Used by daily background worker to update live countdown days.
+         */
+        suspend fun updateAllWidgets(context: Context) {
+            val manager = GlanceAppWidgetManager(context)
+            val glanceIds = manager.getGlanceIds(NoteWidget::class.java)
+            if (glanceIds.isEmpty()) return
+
+            val store = NoteStore(context)
+            val notes = store.notes.first()
+            val activeId = store.activeNoteId.first()
+
+            glanceIds.forEach { glanceId ->
+                val prefs = getAppWidgetState(context, PreferencesGlanceStateDefinition, glanceId)
+                val boundNoteId = prefs[KEY_NOTE_ID] ?: activeId
+                val note = notes.firstOrNull { it.id == boundNoteId } ?: notes.firstOrNull()
+                if (note != null) {
+                    updateAppWidgetState(context, PreferencesGlanceStateDefinition, glanceId) { p ->
+                        p.toMutablePreferences().apply {
+                            this[KEY_NOTE_ID] = note.id
+                            this[KEY_NOTE_TEXT] = note.content
+                            this[KEY_THEME_INDEX] = note.themeIndex
+                            this[KEY_NOTE_TITLE] = note.title
+                            this[KEY_IS_LOCKED] = note.isLocked
+                        }
+                    }
+                    NoteWidget().update(context, glanceId)
+                }
+            }
         }
     }
 
@@ -227,6 +260,33 @@ private fun NoteWidgetContent(
                         .background(theme.accent)
                         .cornerRadius(2.dp),
                 ) {}
+
+                // Offline Live Countdown Badge (Strict privacy: never for locked notes)
+                val countdown = if (!isLocked) CountdownHelper.findNearest(noteText) else null
+                if (countdown != null) {
+                    Spacer(modifier = GlanceModifier.width(8.dp))
+                    Box(
+                        modifier = GlanceModifier
+                            .background(
+                                if (countdown.isToday) theme.accent.copy(alpha = 0.28f)
+                                else theme.surfaceVariant.copy(alpha = 0.8f)
+                            )
+                            .cornerRadius(4.dp)
+                            .padding(horizontal = 6.dp, vertical = 2.dp),
+                    ) {
+                        Text(
+                            text = countdown.compactLabel.uppercase(),
+                            style = TextStyle(
+                                color = ColorProvider(
+                                    if (countdown.isToday) theme.accent
+                                    else theme.textSecondary
+                                ),
+                                fontSize = 9.sp,
+                                fontWeight = FontWeight.Bold,
+                            )
+                        )
+                    }
+                }
 
                 Spacer(modifier = GlanceModifier.defaultWeight())
 

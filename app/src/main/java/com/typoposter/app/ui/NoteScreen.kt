@@ -41,6 +41,8 @@ import com.typoposter.app.R
 import com.typoposter.app.calc.CalcSuggestion
 import com.typoposter.app.calc.SmartCalculatorHelper
 import com.typoposter.app.data.Note
+import com.typoposter.app.date.CountdownBadge
+import com.typoposter.app.date.CountdownHelper
 import com.typoposter.app.theme.FormatType
 import com.typoposter.app.theme.PosterTheme
 import com.typoposter.app.theme.RichTextVisualTransformation
@@ -267,6 +269,29 @@ fun NoteScreen(
                                 fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
                                 letterSpacing = 1.sp,
                             )
+
+                            // Tiny pill for nearest countdown (Strict privacy: never for locked notes)
+                            if (!note.isLocked) {
+                                val nearest = remember(note.content) { CountdownHelper.findNearest(note.content) }
+                                if (nearest != null) {
+                                    Box(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(
+                                                if (nearest.isToday) accentColor.value.copy(alpha = 0.25f)
+                                                else theme.surfaceVariant.copy(alpha = 0.8f)
+                                            )
+                                            .padding(horizontal = 5.dp, vertical = 1.5.dp)
+                                    ) {
+                                        Text(
+                                            text = nearest.compactLabel,
+                                            color = if (nearest.isToday) accentColor.value else secondaryColor.value,
+                                            fontSize = 9.sp,
+                                            fontWeight = FontWeight.Medium,
+                                        )
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -425,6 +450,40 @@ fun NoteScreen(
                     onToggleLockRequested(activeNote.id, !activeNote.isLocked)
                 }
             )
+
+            // ── Live Countdown Pills (Note Footer) ──────
+            val countdowns = remember(activeNote.content, activeNote.isLocked, uiState.isCurrentNoteUnlocked) {
+                if (!activeNote.isLocked || uiState.isCurrentNoteUnlocked) {
+                    CountdownHelper.parseAll(activeNote.content)
+                } else emptyList()
+            }
+
+            AnimatedVisibility(
+                visible = countdowns.isNotEmpty(),
+                enter = fadeIn(tween(180)) + slideInVertically(tween(180)) { it / 2 },
+                exit = fadeOut(tween(120)) + slideOutVertically(tween(120)) { it / 2 },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 6.dp)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    countdowns.forEach { badge ->
+                        CountdownPill(
+                            badge = badge,
+                            theme = theme,
+                            accentColor = accentColor.value,
+                            textColor = textColor.value
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                    }
+                }
+            }
 
             // ── Bottom status ───────────────────────────
             Row(
@@ -827,6 +886,57 @@ private fun CalculatorPill(
                 letterSpacing = 0.5.sp,
             )
         }
+    }
+}
+
+@Composable
+private fun CountdownPill(
+    badge: CountdownBadge,
+    theme: PosterTheme,
+    accentColor: Color,
+    textColor: Color,
+) {
+    val pillBg = if (badge.isToday) {
+        accentColor.copy(alpha = 0.22f)
+    } else {
+        theme.surfaceVariant.copy(alpha = 0.85f)
+    }
+    val pillBorder = if (badge.isToday) {
+        accentColor.copy(alpha = 0.6f)
+    } else {
+        theme.textSecondary.copy(alpha = 0.25f)
+    }
+    val dotColor = if (badge.isToday) {
+        accentColor
+    } else if (badge.isOverdue) {
+        theme.textSecondary.copy(alpha = 0.5f)
+    } else {
+        accentColor
+    }
+
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(16.dp))
+            .background(pillBg)
+            .border(0.8.dp, pillBorder, RoundedCornerShape(16.dp))
+            .padding(horizontal = 10.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Box(
+            modifier = Modifier
+                .size(6.dp)
+                .clip(CircleShape)
+                .background(dotColor)
+        )
+        Text(
+            text = "${badge.tag.removePrefix("@")}: ${badge.label}",
+            color = textColor,
+            fontSize = 11.sp,
+            fontFamily = theme.bodyFont,
+            fontWeight = if (badge.isToday) FontWeight.SemiBold else FontWeight.Normal,
+            letterSpacing = 0.3.sp,
+        )
     }
 }
 
