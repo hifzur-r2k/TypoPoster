@@ -9,6 +9,7 @@ data class Note(
     val content: String = "",
     val themeIndex: Int = 0,
     val updatedAt: Long = System.currentTimeMillis(),
+    val isLocked: Boolean = false,
 ) {
     fun toJson(): JSONObject = JSONObject().apply {
         put("id", id)
@@ -16,6 +17,7 @@ data class Note(
         put("content", content)
         put("themeIndex", themeIndex)
         put("updatedAt", updatedAt)
+        put("isLocked", isLocked)
     }
 
     companion object {
@@ -25,6 +27,7 @@ data class Note(
             content = json.optString("content", ""),
             themeIndex = json.optInt("themeIndex", 0),
             updatedAt = json.optLong("updatedAt", System.currentTimeMillis()),
+            isLocked = json.optBoolean("isLocked", false),
         )
     }
 }

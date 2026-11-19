@@ -73,8 +73,12 @@ dependencies {
     // Google ML Kit Text Recognition (On-device OCR)
     implementation("com.google.mlkit:text-recognition:16.0.0")
 
+    // Biometric Authentication (Fingerprint & Device PIN/Pattern)
+    implementation("androidx.biometric:biometric:1.1.0")
+
     // Unit Testing
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20231013")
 
     // Debug
     debugImplementation("androidx.compose.ui:ui-tooling")

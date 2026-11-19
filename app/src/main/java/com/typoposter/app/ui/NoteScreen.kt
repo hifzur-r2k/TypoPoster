@@ -1,9 +1,15 @@
 package com.typoposter.app.ui
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
@@ -18,6 +24,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
@@ -31,6 +38,8 @@ import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.typoposter.app.R
+import com.typoposter.app.calc.CalcSuggestion
+import com.typoposter.app.calc.SmartCalculatorHelper
 import com.typoposter.app.data.Note
 import com.typoposter.app.theme.FormatType
 import com.typoposter.app.theme.PosterTheme
@@ -55,6 +64,8 @@ fun NoteScreen(
     onThemeSheetDismissed: () -> Unit,
     onRenameDialogDismissed: () -> Unit,
     onShowRenameDialog: () -> Unit,
+    onUnlockRequested: (String) -> Unit = {},
+    onToggleLockRequested: (String, Boolean) -> Unit = { _, _ -> },
     launchWithKeyboard: Boolean = false,
 ) {
     val theme = uiState.theme
@@ -70,6 +81,11 @@ fun NoteScreen(
         if (activeNote.content != textFieldValue.text) {
             textFieldValue = textFieldValue.copy(text = activeNote.content)
         }
+    }
+
+    // Inline Smart Calculator suggestion derived from current text and cursor
+    val calcSuggestion = remember(textFieldValue) {
+        SmartCalculatorHelper.detectCalcSuggestion(textFieldValue)
     }
 
     val backgroundColor = animateColorAsState(
@@ -103,7 +119,8 @@ fun NoteScreen(
         modifier = Modifier
             .fillMaxSize()
             .background(backgroundColor.value)
-            .systemBarsPadding(),
+            .systemBarsPadding()
+            .imePadding(),
     ) {
         Column(
             modifier = Modifier
@@ -231,13 +248,26 @@ fun NoteScreen(
                             )
                             .padding(horizontal = 14.dp, vertical = 6.dp),
                     ) {
-                        Text(
-                            text = note.title.uppercase(),
-                            color = tabText,
-                            fontSize = 11.sp,
-                            fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
-                            letterSpacing = 1.sp,
-                        )
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            if (note.isLocked) {
+                                Icon(
+                                    painter = painterResource(id = R.drawable.ic_lock),
+                                    contentDescription = "Locked",
+                                    tint = if (isSelected) accentColor.value else secondaryColor.value.copy(alpha = 0.6f),
+                                    modifier = Modifier.size(10.dp)
+                                )
+                            }
+                            Text(
+                                text = note.title.uppercase(),
+                                color = tabText,
+                                fontSize = 11.sp,
+                                fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+                                letterSpacing = 1.sp,
+                            )
+                        }
                     }
                 }
 
@@ -281,6 +311,15 @@ fun NoteScreen(
                     fontFamily = theme.headerFont,
                     modifier = Modifier.clickable(onClick = onShowRenameDialog)
                 )
+
+                if (activeNote.isLocked) {
+                    Icon(
+                        painter = painterResource(id = R.drawable.ic_lock),
+                        contentDescription = "Private Note",
+                        tint = accentColor.value,
+                        modifier = Modifier.size(11.dp)
+                    )
+                }
             }
 
             Spacer(modifier = Modifier.height(20.dp))
@@ -291,47 +330,87 @@ fun NoteScreen(
                     .fillMaxWidth()
                     .weight(1f),
             ) {
-                if (activeNote.content.isEmpty()) {
-                    Text(
-                        text = "What's on your mind today?",
-                        color = secondaryColor.value.copy(alpha = 0.4f),
-                        fontSize = 20.sp,
-                        fontFamily = theme.bodyFont,
-                        fontWeight = theme.bodyWeight,
-                        lineHeight = 32.sp,
+                if (activeNote.isLocked && !uiState.isCurrentNoteUnlocked) {
+                    RedactedPosterLockView(
+                        theme = theme,
+                        textColor = textColor.value,
+                        secondaryColor = secondaryColor.value,
+                        accentColor = accentColor.value,
+                        onAuthenticate = { onUnlockRequested(activeNote.id) }
+                    )
+                } else {
+                    if (activeNote.content.isEmpty()) {
+                        Text(
+                            text = "What's on your mind today?",
+                            color = secondaryColor.value.copy(alpha = 0.4f),
+                            fontSize = 20.sp,
+                            fontFamily = theme.bodyFont,
+                            fontWeight = theme.bodyWeight,
+                            lineHeight = 32.sp,
+                        )
+                    }
+
+                    BasicTextField(
+                        value = textFieldValue,
+                        onValueChange = { newValue ->
+                            textFieldValue = newValue
+                            if (newValue.text != activeNote.content) {
+                                onTextChanged(newValue.text)
+                            }
+                        },
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .focusRequester(focusRequester),
+                        visualTransformation = remember(theme) {
+                            RichTextVisualTransformation(theme)
+                        },
+                        textStyle = TextStyle(
+                            color = textColor.value,
+                            fontSize = autoScaleFontSize(activeNote.content.length),
+                            fontFamily = theme.bodyFont,
+                            fontWeight = if (activeNote.content.length <= 50) FontWeight.Medium
+                            else theme.bodyWeight,
+                            lineHeight = autoScaleLineHeight(activeNote.content.length),
+                            letterSpacing = 0.3.sp,
+                        ),
+                        cursorBrush = SolidColor(accentColor.value),
                     )
                 }
+            }
 
-                BasicTextField(
-                    value = textFieldValue,
-                    onValueChange = { newValue ->
-                        textFieldValue = newValue
-                        if (newValue.text != activeNote.content) {
-                            onTextChanged(newValue.text)
-                        }
-                    },
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .focusRequester(focusRequester),
-                    visualTransformation = remember(theme) {
-                        RichTextVisualTransformation(theme)
-                    },
-                    textStyle = TextStyle(
-                        color = textColor.value,
-                        fontSize = autoScaleFontSize(activeNote.content.length),
-                        fontFamily = theme.bodyFont,
-                        fontWeight = if (activeNote.content.length <= 50) FontWeight.Medium
-                        else theme.bodyWeight,
-                        lineHeight = autoScaleLineHeight(activeNote.content.length),
-                        letterSpacing = 0.3.sp,
-                    ),
-                    cursorBrush = SolidColor(accentColor.value),
-                )
+            // ── Inline Smart Calculator Pill (Theme-matched & Animated) ──
+            AnimatedVisibility(
+                visible = calcSuggestion != null,
+                enter = fadeIn(tween(180)) + slideInVertically(tween(180)) { it / 2 },
+                exit = fadeOut(tween(120)) + slideOutVertically(tween(120)) { it / 2 },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 6.dp)
+            ) {
+                if (calcSuggestion != null) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.Center
+                    ) {
+                        CalculatorPill(
+                            suggestion = calcSuggestion,
+                            theme = theme,
+                            textColor = textColor.value,
+                            secondaryColor = secondaryColor.value,
+                            onApply = {
+                                val updated = SmartCalculatorHelper.applySuggestion(textFieldValue, calcSuggestion)
+                                textFieldValue = updated
+                                onTextChanged(updated.text)
+                            }
+                        )
+                    }
+                }
             }
 
             // ── Formatting Toolbar (Bold, Italic, 3 Highlights) ──
             FormattingToolbar(
                 theme = theme,
+                isLocked = activeNote.isLocked,
                 onFormat = { format ->
                     val updated = TextFormatHelper.toggleFormat(textFieldValue, format)
                     textFieldValue = updated
@@ -341,6 +420,9 @@ fun NoteScreen(
                     val updated = TextFormatHelper.clearFormatting(textFieldValue)
                     textFieldValue = updated
                     onTextChanged(updated.text)
+                },
+                onToggleLock = {
+                    onToggleLockRequested(activeNote.id, !activeNote.isLocked)
                 }
             )
 
@@ -413,8 +495,10 @@ fun NoteScreen(
 @Composable
 private fun FormattingToolbar(
     theme: PosterTheme,
+    isLocked: Boolean,
     onFormat: (FormatType) -> Unit,
     onClearFormat: () -> Unit,
+    onToggleLock: () -> Unit,
 ) {
     Row(
         modifier = Modifier
@@ -512,6 +596,28 @@ private fun FormattingToolbar(
                     .clip(CircleShape)
                     .clickable(onClick = onClearFormat)
                     .padding(2.dp),
+            )
+
+            // Divider
+            Box(
+                modifier = Modifier
+                    .width(1.dp)
+                    .height(14.dp)
+                    .background(theme.textSecondary.copy(alpha = 0.3f))
+            )
+
+            // Lock / Unlock toggle
+            Icon(
+                painter = painterResource(
+                    id = if (isLocked) R.drawable.ic_lock else R.drawable.ic_lock_open
+                ),
+                contentDescription = if (isLocked) "Private Note (Locked)" else "Public Note (Unlocked)",
+                tint = if (isLocked) theme.accent else theme.textSecondary.copy(alpha = 0.6f),
+                modifier = Modifier
+                    .size(16.dp)
+                    .clip(CircleShape)
+                    .clickable(onClick = onToggleLock)
+                    .padding(1.dp),
             )
         }
     }
@@ -649,4 +755,156 @@ private fun autoScaleLineHeight(textLength: Int) = when {
     textLength <= 120 -> 30.sp
     textLength <= 250 -> 26.sp
     else              -> 23.sp
+}
+
+@Composable
+private fun CalculatorPill(
+    suggestion: CalcSuggestion,
+    theme: PosterTheme,
+    textColor: Color,
+    secondaryColor: Color,
+    onApply: () -> Unit,
+) {
+    Surface(
+        modifier = Modifier
+            .shadow(6.dp, RoundedCornerShape(22.dp))
+            .clip(RoundedCornerShape(22.dp))
+            .clickable(onClick = onApply),
+        shape = RoundedCornerShape(22.dp),
+        color = theme.surfaceVariant,
+        border = androidx.compose.foundation.BorderStroke(1.5.dp, theme.accent),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 9.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            when (suggestion) {
+                is CalcSuggestion.InlineMath -> {
+                    Text(
+                        text = "=",
+                        color = theme.accent,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                    )
+                    Text(
+                        text = suggestion.formattedResult,
+                        color = textColor,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 0.5.sp,
+                    )
+                }
+                is CalcSuggestion.AutoSum -> {
+                    Text(
+                        text = "∑",
+                        color = theme.accent,
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                    )
+                    Text(
+                        text = "Total: ${suggestion.formattedTotal}",
+                        color = textColor,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 0.5.sp,
+                    )
+                }
+            }
+
+            Box(
+                modifier = Modifier
+                    .width(1.dp)
+                    .height(14.dp)
+                    .background(secondaryColor.copy(alpha = 0.35f))
+            )
+
+            Text(
+                text = "Tap to insert ↵",
+                color = theme.accent,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold,
+                letterSpacing = 0.5.sp,
+            )
+        }
+    }
+}
+
+@Composable
+private fun RedactedPosterLockView(
+    theme: PosterTheme,
+    textColor: Color,
+    secondaryColor: Color,
+    accentColor: Color,
+    onAuthenticate: () -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(onClick = onAuthenticate),
+        contentAlignment = Alignment.Center,
+    ) {
+        // Aesthetic geometric censor bars matching line rhythm
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            val barColor = secondaryColor.copy(alpha = 0.16f)
+            val widths = listOf(0.85f, 0.68f, 0.94f, 0.52f, 0.78f, 0.62f, 0.88f, 0.45f)
+
+            widths.forEach { w ->
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth(w)
+                        .height(20.dp)
+                        .clip(RoundedCornerShape(4.dp))
+                        .background(barColor)
+                )
+            }
+        }
+
+        // Center authentication badge
+        Surface(
+            modifier = Modifier
+                .shadow(8.dp, RoundedCornerShape(22.dp))
+                .clip(RoundedCornerShape(22.dp)),
+            shape = RoundedCornerShape(22.dp),
+            color = theme.surfaceVariant.copy(alpha = 0.96f),
+            border = androidx.compose.foundation.BorderStroke(1.5.dp, accentColor.copy(alpha = 0.6f)),
+        ) {
+            Row(
+                modifier = Modifier
+                    .clickable(onClick = onAuthenticate)
+                    .padding(horizontal = 18.dp, vertical = 11.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Icon(
+                    painter = painterResource(id = R.drawable.ic_lock),
+                    contentDescription = null,
+                    tint = accentColor,
+                    modifier = Modifier.size(18.dp)
+                )
+
+                Column {
+                    Text(
+                        text = "REDACTED NOTE",
+                        color = textColor,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        letterSpacing = 1.5.sp,
+                    )
+                    Text(
+                        text = "Tap to unlock with fingerprint / PIN",
+                        color = secondaryColor.copy(alpha = 0.75f),
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Medium,
+                    )
+                }
+            }
+        }
+    }
 }

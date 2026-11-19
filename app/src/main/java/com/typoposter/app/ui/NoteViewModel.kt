@@ -27,7 +27,11 @@ data class NoteUiState(
     val isRenameDialogVisible: Boolean = false,
     val isScanSheetVisible: Boolean = false,
     val autoLaunchCameraOnScan: Boolean = false,
-)
+    val unlockedNoteIds: Set<String> = emptySet(),
+) {
+    val isCurrentNoteUnlocked: Boolean
+        get() = !activeNote.isLocked || unlockedNoteIds.contains(activeNote.id)
+}
 
 class NoteViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -42,7 +46,7 @@ class NoteViewModel(application: Application) : AndroidViewModel(application) {
                 val active = notesList.firstOrNull { it.id == activeId }
                     ?: notesList.firstOrNull()
                     ?: Note()
-                NoteUiState(
+                _uiState.value.copy(
                     notes = notesList,
                     activeNote = active,
                     theme = ThemeEngine.getTheme(active.themeIndex),
@@ -54,8 +58,37 @@ class NoteViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun selectNoteById(noteId: String) {
+        // Automatically re-lock private notes when switching to another note
+        _uiState.update { it.copy(unlockedNoteIds = emptySet()) }
         viewModelScope.launch {
             store.setActiveNoteId(noteId)
+        }
+    }
+
+    fun unlockNote(noteId: String) {
+        _uiState.update { it.copy(unlockedNoteIds = it.unlockedNoteIds + noteId) }
+    }
+
+    fun relockAllNotes() {
+        _uiState.update { it.copy(unlockedNoteIds = emptySet()) }
+    }
+
+    fun toggleNoteLock(noteId: String, makeLocked: Boolean) {
+        val currentNotes = _uiState.value.notes
+        val target = currentNotes.firstOrNull { it.id == noteId } ?: return
+        val updated = target.copy(isLocked = makeLocked, updatedAt = System.currentTimeMillis())
+
+        _uiState.update { state ->
+            val newUnlocked = if (makeLocked) state.unlockedNoteIds - noteId else state.unlockedNoteIds
+            state.copy(
+                activeNote = if (state.activeNote.id == noteId) updated else state.activeNote,
+                unlockedNoteIds = newUnlocked
+            )
+        }
+
+        viewModelScope.launch {
+            store.saveNote(updated)
+            NoteWidget.updateWidgetForNote(getApplication(), updated)
         }
     }
 
