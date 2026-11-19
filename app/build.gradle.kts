@@ -70,6 +70,12 @@ dependencies {
     implementation("androidx.glance:glance-appwidget:1.0.0")
     implementation("androidx.glance:glance-material3:1.0.0")
 
+    // Google ML Kit Text Recognition (On-device OCR)
+    implementation("com.google.mlkit:text-recognition:16.0.0")
+
+    // Unit Testing
+    testImplementation("junit:junit:4.13.2")
+
     // Debug
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")

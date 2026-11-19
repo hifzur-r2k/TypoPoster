@@ -75,7 +75,9 @@ data class PosterTheme(
     val bodyWeight: FontWeight = FontWeight.Normal,
     val surfaceVariant: Color,   // for UI elements (cards, sheets)
     val onSurface: Color,        // text on surfaceVariant
-)
+) {
+    val isDark: Boolean get() = id != 1
+}
 
 object ThemeEngine {
 

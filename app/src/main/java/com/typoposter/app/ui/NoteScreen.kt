@@ -22,6 +22,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontStyle
@@ -29,6 +30,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.typoposter.app.R
 import com.typoposter.app.data.Note
 import com.typoposter.app.theme.FormatType
 import com.typoposter.app.theme.PosterTheme
@@ -45,6 +47,9 @@ fun NoteScreen(
     onDeleteNote: () -> Unit,
     onRenameNote: (String) -> Unit,
     onPinWidgetClicked: () -> Unit,
+    onScanClicked: () -> Unit = {},
+    onScanSheetDismissed: () -> Unit = {},
+    onApplyScannedText: (String, ScanApplyMode, Boolean) -> Unit = { _, _, _ -> },
     onThemeButtonClicked: () -> Unit,
     onThemeSelected: (Int) -> Unit,
     onThemeSheetDismissed: () -> Unit,
@@ -123,11 +128,40 @@ fun NoteScreen(
                     letterSpacing = 4.sp,
                 )
 
-                // Actions: Add to Widget button + Theme button
+                // Actions: Scan button + Add to Widget button + Theme button
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
+                    // Direct "SCAN" button with Camera icon
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(16.dp))
+                            .background(theme.surfaceVariant.copy(alpha = 0.6f))
+                            .clickable(onClick = onScanClicked)
+                            .padding(horizontal = 9.dp, vertical = 5.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Icon(
+                                painter = painterResource(id = R.drawable.ic_camera),
+                                contentDescription = "Scan Text",
+                                tint = textColor.value,
+                                modifier = Modifier.size(12.dp)
+                            )
+                            Text(
+                                text = "SCAN",
+                                color = textColor.value,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                letterSpacing = 1.sp,
+                            )
+                        }
+                    }
+
                     // Direct "Add to Widget" button
                     Box(
                         modifier = Modifier
@@ -347,6 +381,16 @@ fun NoteScreen(
             )
         }
 
+        // ── Camera Scan & OCR Sheet ─────────────────────
+        if (uiState.isScanSheetVisible) {
+            CameraScanSheet(
+                theme = theme,
+                autoLaunchCamera = uiState.autoLaunchCameraOnScan,
+                onDismiss = onScanSheetDismissed,
+                onApplyText = onApplyScannedText,
+            )
+        }
+
         // ── Note Rename / Delete Dialog ─────────────────
         if (uiState.isRenameDialogVisible) {
             NoteActionDialog(
@@ -459,15 +503,15 @@ private fun FormattingToolbar(
             )
 
             // Clear formatting
-            Text(
-                text = "✕",
-                color = theme.textSecondary.copy(alpha = 0.6f),
-                fontSize = 12.sp,
-                fontWeight = FontWeight.Bold,
+            Icon(
+                painter = painterResource(id = R.drawable.ic_close),
+                contentDescription = "Clear format",
+                tint = theme.textSecondary.copy(alpha = 0.6f),
                 modifier = Modifier
+                    .size(16.dp)
                     .clip(CircleShape)
                     .clickable(onClick = onClearFormat)
-                    .padding(4.dp),
+                    .padding(2.dp),
             )
         }
     }
@@ -548,8 +592,15 @@ private fun NoteActionDialog(
                     horizontalArrangement = Arrangement.Center,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
+                    Icon(
+                        painter = painterResource(id = R.drawable.ic_pin),
+                        contentDescription = null,
+                        tint = theme.accent,
+                        modifier = Modifier.size(15.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
                     Text(
-                        text = "📌 Add Widget to Home Screen",
+                        text = "Add Widget to Home Screen",
                         color = theme.accent,
                         fontSize = 13.sp,
                         fontWeight = FontWeight.Medium,

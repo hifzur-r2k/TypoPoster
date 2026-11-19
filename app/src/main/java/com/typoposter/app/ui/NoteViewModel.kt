@@ -25,6 +25,8 @@ data class NoteUiState(
     val theme: PosterTheme = ThemeEngine.Executive,
     val isThemeSheetVisible: Boolean = false,
     val isRenameDialogVisible: Boolean = false,
+    val isScanSheetVisible: Boolean = false,
+    val autoLaunchCameraOnScan: Boolean = false,
 )
 
 class NoteViewModel(application: Application) : AndroidViewModel(application) {
@@ -122,8 +124,11 @@ class NoteViewModel(application: Application) : AndroidViewModel(application) {
      * Directly prompts the user to place a home screen widget bound to the current note.
      */
     fun pinActiveNoteToWidget() {
+        pinNote(_uiState.value.activeNote)
+    }
+
+    fun pinNote(note: Note) {
         val context = getApplication<Application>()
-        val note = _uiState.value.activeNote
         val appWidgetManager = AppWidgetManager.getInstance(context)
 
         if (appWidgetManager.isRequestPinAppWidgetSupported) {
@@ -145,6 +150,66 @@ class NoteViewModel(application: Application) : AndroidViewModel(application) {
                 Toast.LENGTH_LONG
             ).show()
         }
+    }
+
+    fun applyScannedText(text: String, mode: ScanApplyMode, pinToWidget: Boolean = false) {
+        if (text.isBlank()) return
+        viewModelScope.launch {
+            when (mode) {
+                ScanApplyMode.NEW_NOTE -> {
+                    val firstLine = text.lineSequence()
+                        .firstOrNull { it.isNotBlank() }
+                        ?.trim()
+                        ?.take(20)
+                        ?: "Scanned Note"
+                    val newNote = store.createNote(title = firstLine)
+                    val updated = newNote.copy(
+                        content = text,
+                        updatedAt = System.currentTimeMillis()
+                    )
+                    store.saveNote(updated)
+                    _uiState.update { it.copy(activeNote = updated) }
+                    NoteWidget.updateWidgetForNote(getApplication(), updated)
+                    if (pinToWidget) {
+                        pinNote(updated)
+                    }
+                }
+                ScanApplyMode.REPLACE -> {
+                    val current = _uiState.value.activeNote.copy(
+                        content = text,
+                        updatedAt = System.currentTimeMillis()
+                    )
+                    _uiState.update { it.copy(activeNote = current) }
+                    store.saveNote(current)
+                    NoteWidget.updateWidgetForNote(getApplication(), current)
+                    if (pinToWidget) {
+                        pinNote(current)
+                    }
+                }
+                ScanApplyMode.APPEND -> {
+                    val curText = _uiState.value.activeNote.content
+                    val combined = if (curText.isBlank()) text else "$curText\n\n$text"
+                    val current = _uiState.value.activeNote.copy(
+                        content = combined,
+                        updatedAt = System.currentTimeMillis()
+                    )
+                    _uiState.update { it.copy(activeNote = current) }
+                    store.saveNote(current)
+                    NoteWidget.updateWidgetForNote(getApplication(), current)
+                    if (pinToWidget) {
+                        pinNote(current)
+                    }
+                }
+            }
+        }
+    }
+
+    fun showScanSheet(autoLaunchCamera: Boolean = false) {
+        _uiState.update { it.copy(isScanSheetVisible = true, autoLaunchCameraOnScan = autoLaunchCamera) }
+    }
+
+    fun hideScanSheet() {
+        _uiState.update { it.copy(isScanSheetVisible = false, autoLaunchCameraOnScan = false) }
     }
 
     fun showThemeSheet() {

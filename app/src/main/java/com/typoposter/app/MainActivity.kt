@@ -34,6 +34,9 @@ class MainActivity : ComponentActivity() {
                 onDeleteNote = viewModel::deleteActiveNote,
                 onRenameNote = viewModel::renameActiveNote,
                 onPinWidgetClicked = viewModel::pinActiveNoteToWidget,
+                onScanClicked = { viewModel.showScanSheet(autoLaunchCamera = false) },
+                onScanSheetDismissed = viewModel::hideScanSheet,
+                onApplyScannedText = viewModel::applyScannedText,
                 onThemeButtonClicked = viewModel::showThemeSheet,
                 onThemeSelected = viewModel::selectTheme,
                 onThemeSheetDismissed = viewModel::hideThemeSheet,
@@ -54,6 +57,10 @@ class MainActivity : ComponentActivity() {
         val targetNoteId = intent?.getStringExtra("EXTRA_NOTE_ID")
         if (!targetNoteId.isNullOrBlank()) {
             viewModel.selectNoteById(targetNoteId)
+        }
+        val action = intent?.getStringExtra("EXTRA_ACTION")
+        if (action == "ACTION_SCAN") {
+            viewModel.showScanSheet(autoLaunchCamera = true)
         }
     }
 }

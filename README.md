@@ -30,6 +30,12 @@ Designed around negative space, curated editorial typography, and instant home s
     - 🟣 **Deep Plum:** Rich velvety dark berry / wine
     - 🟢 **Forest Pine:** Moody deep emerald pine
   - True inline background text highlighting (using native `BackgroundColorSpan` in RemoteViews) without bullet symbols or heading clutter.
+- **📷 Camera Scan & On-Device AI OCR:**
+  - **Instant Camera & Gallery Capture:** Snap a photo of physical books, documents, signs, posters, or import any screenshot/image from your gallery.
+  - **On-Device ML Kit OCR:** Fully offline, fast, privacy-preserving on-device text recognition.
+  - **Typographic Cleaning & Aesthetic Preview:** Broken hyphenations across line breaks are re-joined, clean paragraph spacing is restored, and the text is rendered immediately in your chosen theme with auto-scaled typography.
+  - **1-Tap Direct-to-Widget:** Convert any physical document into a live home screen widget instantly with the **`CREATE & ADD TO WIDGET`** button.
+  - **Widget Quick-Scan Button:** Tap the camera icon directly in the widget's header from your home screen to instantly open the scanner.
 
 ---
 
@@ -37,6 +43,7 @@ Designed around negative space, curated editorial typography, and instant home s
 
 - **UI:** Jetpack Compose (Material 3)
 - **Widgets:** Jetpack Glance AppWidget (Material 3)
+- **OCR Engine:** Google ML Kit Text Recognition (On-device offline ML)
 - **State Management:** Unidirectional Data Flow (UDF) via Kotlin `StateFlow` and `AndroidViewModel`
 - **Persistence:** Jetpack DataStore Preferences (Zero Room / SQLite migration overhead)
 - **Fonts:** Runtime Google Fonts Provider (`androidx.compose.ui.text.googlefonts`)

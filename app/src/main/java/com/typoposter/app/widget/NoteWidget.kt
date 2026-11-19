@@ -55,6 +55,7 @@ class NoteWidget : GlanceAppWidget() {
         val KEY_NOTE_TITLE = stringPreferencesKey("widget_note_title")
 
         val PARAM_NOTE_ID = ActionParameters.Key<String>("EXTRA_NOTE_ID")
+        val PARAM_ACTION = ActionParameters.Key<String>("EXTRA_ACTION")
 
         /**
          * Real-time update: updates all widget instances associated with the given note.
@@ -218,8 +219,26 @@ private fun NoteWidgetContent(
 
                 Spacer(modifier = GlanceModifier.defaultWeight())
 
-                // Note label
+                // 1-tap Camera Scan button directly inside widget header
+                Image(
+                    provider = ImageProvider(R.drawable.ic_camera),
+                    contentDescription = "Scan Text",
+                    colorFilter = ColorFilter.tint(ColorProvider(theme.textSecondary)),
+                    modifier = GlanceModifier
+                        .size(15.dp)
+                        .clickable(
+                            actionStartActivity<MainActivity>(
+                                actionParametersOf(
+                                    NoteWidget.PARAM_NOTE_ID to noteId,
+                                    NoteWidget.PARAM_ACTION to "ACTION_SCAN"
+                                )
+                            )
+                        )
+                )
+
                 if (size.width >= MEDIUM.width) {
+                    Spacer(modifier = GlanceModifier.width(8.dp))
+                    // Note label
                     Text(
                         text = noteTitle.uppercase(),
                         style = TextStyle(

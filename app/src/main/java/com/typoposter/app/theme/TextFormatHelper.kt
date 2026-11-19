@@ -148,6 +148,63 @@ object TextFormatHelper {
                 contentStyle = SpanStyle(fontStyle = FontStyle.Italic),
                 tagStyle = tagStyle
             )
+
+            // Headings (# Heading or ## Heading)
+            val headingRegex = Regex("""^(#{1,3})\s+(.*)$""", RegexOption.MULTILINE)
+            headingRegex.findAll(rawText).forEach { match ->
+                val hashRange = match.groups[1]!!.range
+                val textRange = match.groups[2]!!.range
+                addStyle(tagStyle, hashRange.first, hashRange.last + 1)
+                addStyle(
+                    SpanStyle(
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 0.5.sp
+                    ),
+                    textRange.first,
+                    textRange.last + 1
+                )
+            }
+
+            // Bullet points (• Item or - Item)
+            val bulletRegex = Regex("""^([\s]*[•\-])\s+""", RegexOption.MULTILINE)
+            bulletRegex.findAll(rawText).forEach { match ->
+                val bulletRange = match.groups[1]!!.range
+                addStyle(
+                    SpanStyle(
+                        color = theme.accent,
+                        fontWeight = FontWeight.ExtraBold
+                    ),
+                    bulletRange.first,
+                    bulletRange.last + 1
+                )
+            }
+
+            // Numbered list items (1. Item, 2. Item)
+            val numberRegex = Regex("""^([\s]*[0-9]{1,3}\.)\s+""", RegexOption.MULTILINE)
+            numberRegex.findAll(rawText).forEach { match ->
+                val numRange = match.groups[1]!!.range
+                addStyle(
+                    SpanStyle(
+                        color = theme.accent,
+                        fontWeight = FontWeight.Bold
+                    ),
+                    numRange.first,
+                    numRange.last + 1
+                )
+            }
+
+            // Table pipes |
+            val tablePipeRegex = Regex("""\|""")
+            tablePipeRegex.findAll(rawText).forEach { match ->
+                addStyle(
+                    SpanStyle(
+                        color = theme.accent.copy(alpha = 0.55f),
+                        fontWeight = FontWeight.Bold
+                    ),
+                    match.range.first,
+                    match.range.last + 1
+                )
+            }
         }
     }
 
@@ -248,6 +305,35 @@ object TextFormatHelper {
 
         if (lastIndex < rawText.length) {
             sb.append(rawText.substring(lastIndex))
+        }
+
+        // Style bullet points in widget
+        val bulletRegex = Regex("""^([\s]*[•\-])\s+""", RegexOption.MULTILINE)
+        bulletRegex.findAll(sb).forEach { m ->
+            val bRange = m.groups[1]!!.range
+            sb.setSpan(
+                ForegroundColorSpan(theme.accent.toArgb()),
+                bRange.first,
+                bRange.last + 1,
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+            )
+            sb.setSpan(
+                StyleSpan(Typeface.BOLD),
+                bRange.first,
+                bRange.last + 1,
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+            )
+        }
+
+        // Style table pipes in widget
+        val tablePipeRegex = Regex("""\|""")
+        tablePipeRegex.findAll(sb).forEach { m ->
+            sb.setSpan(
+                ForegroundColorSpan(theme.accent.toArgb()),
+                m.range.first,
+                m.range.last + 1,
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+            )
         }
 
         return sb
