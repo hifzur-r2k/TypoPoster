@@ -3,6 +3,20 @@
 
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+    <queries>
+        <intent>
+            <action android:name="android.speech.RecognitionService" />
+        </intent>
+        <intent>
+            <action android:name="android.speech.action.RECOGNIZE_SPEECH" />
+        </intent>
+        <package android:name="com.google.android.googlequicksearchbox" />
+        <package android:name="com.google.android.tts" />
+        <package android:name="com.google.android.as" />
+        <package android:name="com.google.android.inputmethod.latin" />
+    </queries>
 
     <application
         android:name=".TypoPosterApp"
@@ -37,6 +51,14 @@
                 <action android:name="android.appwidget.action.APPWIDGET_CONFIGURE" />
             </intent-filter>
         </activity>
+
+        <!-- Floating Transparent Voice Overlay (1-Tap from Home Screen Widget) -->
+        <activity
+            android:name=".ui.VoiceOverlayActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:theme="@style/Theme.TypoPoster.TransparentOverlay"
+            android:windowSoftInputMode="adjustNothing" />
 
         <!-- Widget Receiver -->
         <receiver

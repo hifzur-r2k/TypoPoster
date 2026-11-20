@@ -75,6 +75,8 @@ dependencies {
 
     // Biometric Authentication (Fingerprint & Device PIN/Pattern)
     implementation("androidx.biometric:biometric:1.1.0")
+    // Modern Fragment KTX to upgrade older transitive fragment from biometric and fix 16-bit requestCode issue
+    implementation("androidx.fragment:fragment-ktx:1.8.5")
 
     // WorkManager (Offline Daily Widget Refresh)
     implementation("androidx.work:work-runtime-ktx:2.9.0")

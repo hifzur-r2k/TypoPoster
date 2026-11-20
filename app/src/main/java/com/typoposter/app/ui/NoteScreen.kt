@@ -1,5 +1,16 @@
 package com.typoposter.app.ui
 
+import android.Manifest
+import android.app.Activity
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.speech.RecognizerIntent
+import android.util.Log
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import kotlinx.coroutines.launch
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
@@ -29,6 +40,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
@@ -37,6 +49,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import com.typoposter.app.R
 import com.typoposter.app.calc.CalcSuggestion
 import com.typoposter.app.calc.SmartCalculatorHelper
@@ -47,6 +60,9 @@ import com.typoposter.app.theme.FormatType
 import com.typoposter.app.theme.PosterTheme
 import com.typoposter.app.theme.RichTextVisualTransformation
 import com.typoposter.app.theme.TextFormatHelper
+import com.typoposter.app.voice.SpeechState
+import com.typoposter.app.voice.VoiceLanguage
+import com.typoposter.app.voice.VoiceToNoteEngine
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -79,15 +95,147 @@ fun NoteScreen(
         mutableStateOf(TextFieldValue(activeNote.content, TextRange(activeNote.content.length)))
     }
 
+    var lastEmittedText by remember(activeNote.id) {
+        mutableStateOf(activeNote.content)
+    }
+
     LaunchedEffect(activeNote.content) {
-        if (activeNote.content != textFieldValue.text) {
-            textFieldValue = textFieldValue.copy(text = activeNote.content)
+        // Prevent typing echo: only update if activeNote.content changed externally,
+        // never clobber active typing/deleting
+        if (activeNote.content != lastEmittedText && activeNote.content != textFieldValue.text) {
+            lastEmittedText = activeNote.content
+            val newCursor = activeNote.content.length
+            textFieldValue = TextFieldValue(
+                text = activeNote.content,
+                selection = TextRange(newCursor)
+            )
         }
     }
 
     // Inline Smart Calculator suggestion derived from current text and cursor
     val calcSuggestion = remember(textFieldValue) {
         SmartCalculatorHelper.detectCalcSuggestion(textFieldValue)
+    }
+
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+    var speechState by remember { mutableStateOf<SpeechState>(SpeechState.Idle) }
+    var voiceLanguage by remember { mutableStateOf(VoiceLanguage.ENGLISH) }
+    var showAudioPermissionDialog by remember { mutableStateOf(false) }
+    // Fallback system speech recognition launcher (100% device compatibility)
+    val speechIntentLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        try {
+            if (result.resultCode == Activity.RESULT_OK) {
+                val matches = result.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+                val spoken = matches?.firstOrNull() ?: ""
+                if (spoken.isNotBlank()) {
+                    val converted = com.typoposter.app.voice.SpokenDateParser.convert(spoken)
+                    val updated = insertSpeechText(textFieldValue, converted)
+                    textFieldValue = updated
+                    lastEmittedText = updated.text
+                    onTextChanged(updated.text)
+                }
+            }
+        } catch (t: Throwable) {
+            Log.e("NoteScreen", "Error handling speech intent result", t)
+        }
+    }
+
+    // Fallback: Launch system speech dialog without redirecting to Settings
+    val launchSystemSpeechOrPrompt: () -> Unit = {
+        try {
+            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE, voiceLanguage.tag)
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, voiceLanguage.tag)
+                if (voiceLanguage == VoiceLanguage.ENGLISH) {
+                    putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+                } else {
+                    putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, false)
+                }
+                putExtra(
+                    RecognizerIntent.EXTRA_PROMPT,
+                    if (voiceLanguage == VoiceLanguage.HINDI) "बोलिए (Spoken note or deadline)..."
+                    else "Speak note or deadline..."
+                )
+            }
+            if (intent.resolveActivity(context.packageManager) != null) {
+                speechIntentLauncher.launch(intent)
+            } else {
+                speechState = SpeechState.Error("Voice recognition service not available (Error 5)")
+            }
+        } catch (t: Throwable) {
+            Log.w("NoteScreen", "System speech recognition unavailable: ${t.message}")
+            speechState = SpeechState.Error("Voice error: ${t.localizedMessage ?: "unavailable"} (Error 5)")
+        }
+    }
+
+    val audioPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (isGranted) {
+            try {
+                VoiceToNoteEngine.startListening(
+                    context = context,
+                    language = voiceLanguage,
+                    onTier3Fallback = launchSystemSpeechOrPrompt,
+                    onStateChange = { newState ->
+                        speechState = newState
+                    }
+                )
+            } catch (t: Throwable) {
+                Log.e("NoteScreen", "Permission granted listener failed", t)
+                launchSystemSpeechOrPrompt()
+            }
+        } else {
+            showAudioPermissionDialog = true
+        }
+    }
+
+    val isListening = speechState is SpeechState.Listening || speechState is SpeechState.InterimResult
+
+    val onToggleVoice: () -> Unit = {
+        try {
+            if (isListening) {
+                VoiceToNoteEngine.stopListening()
+            } else {
+                if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                    VoiceToNoteEngine.startListening(
+                        context = context,
+                        language = voiceLanguage,
+                        onTier3Fallback = launchSystemSpeechOrPrompt,
+                        onStateChange = { newState ->
+                            speechState = newState
+                        }
+                    )
+                } else {
+                    audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                }
+            }
+        } catch (t: Throwable) {
+            Log.e("NoteScreen", "onToggleVoice failed", t)
+            launchSystemSpeechOrPrompt()
+        }
+    }
+
+    // Handle recognized voice text insertion at cursor without corrupting existing spans
+    LaunchedEffect(speechState) {
+        val state = speechState
+        if (state is SpeechState.FinalResult && state.convertedText.isNotBlank()) {
+            val updated = insertSpeechText(textFieldValue, state.convertedText)
+            textFieldValue = updated
+            lastEmittedText = updated.text
+            onTextChanged(updated.text)
+            speechState = SpeechState.Idle
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            VoiceToNoteEngine.cancelListening()
+        }
     }
 
     val backgroundColor = animateColorAsState(
@@ -147,10 +295,10 @@ fun NoteScreen(
                     letterSpacing = 4.sp,
                 )
 
-                // Actions: Scan button + Add to Widget button + Theme button
+                // Actions: Scan button + Voice button + Add to Widget button + Theme button
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     // Direct "SCAN" button with Camera icon
                     Box(
@@ -158,7 +306,7 @@ fun NoteScreen(
                             .clip(RoundedCornerShape(16.dp))
                             .background(theme.surfaceVariant.copy(alpha = 0.6f))
                             .clickable(onClick = onScanClicked)
-                            .padding(horizontal = 9.dp, vertical = 5.dp),
+                            .padding(horizontal = 8.dp, vertical = 5.dp),
                         contentAlignment = Alignment.Center,
                     ) {
                         Row(
@@ -174,6 +322,38 @@ fun NoteScreen(
                             Text(
                                 text = "SCAN",
                                 color = textColor.value,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                letterSpacing = 1.sp,
+                            )
+                        }
+                    }
+
+                    // Direct "VOICE" button with Mic icon
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(16.dp))
+                            .background(
+                                if (isListening) accentColor.value.copy(alpha = 0.25f)
+                                else theme.surfaceVariant.copy(alpha = 0.6f)
+                            )
+                            .clickable(onClick = onToggleVoice)
+                            .padding(horizontal = 8.dp, vertical = 5.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Icon(
+                                painter = painterResource(id = R.drawable.ic_mic),
+                                contentDescription = "Voice to Note",
+                                tint = if (isListening) accentColor.value else textColor.value,
+                                modifier = Modifier.size(12.dp)
+                            )
+                            Text(
+                                text = if (isListening) "LISTENING" else "VOICE",
+                                color = if (isListening) accentColor.value else textColor.value,
                                 fontSize = 10.sp,
                                 fontWeight = FontWeight.SemiBold,
                                 letterSpacing = 1.sp,
@@ -379,7 +559,8 @@ fun NoteScreen(
                         value = textFieldValue,
                         onValueChange = { newValue ->
                             textFieldValue = newValue
-                            if (newValue.text != activeNote.content) {
+                            if (newValue.text != lastEmittedText) {
+                                lastEmittedText = newValue.text
                                 onTextChanged(newValue.text)
                             }
                         },
@@ -391,11 +572,11 @@ fun NoteScreen(
                         },
                         textStyle = TextStyle(
                             color = textColor.value,
-                            fontSize = autoScaleFontSize(activeNote.content.length),
+                            fontSize = autoScaleFontSize(textFieldValue.text.length),
                             fontFamily = theme.bodyFont,
-                            fontWeight = if (activeNote.content.length <= 50) FontWeight.Medium
+                            fontWeight = if (textFieldValue.text.length <= 50) FontWeight.Medium
                             else theme.bodyWeight,
-                            lineHeight = autoScaleLineHeight(activeNote.content.length),
+                            lineHeight = autoScaleLineHeight(textFieldValue.text.length),
                             letterSpacing = 0.3.sp,
                         ),
                         cursorBrush = SolidColor(accentColor.value),
@@ -425,6 +606,7 @@ fun NoteScreen(
                             onApply = {
                                 val updated = SmartCalculatorHelper.applySuggestion(textFieldValue, calcSuggestion)
                                 textFieldValue = updated
+                                lastEmittedText = updated.text
                                 onTextChanged(updated.text)
                             }
                         )
@@ -432,22 +614,81 @@ fun NoteScreen(
                 }
             }
 
-            // ── Formatting Toolbar (Bold, Italic, 3 Highlights) ──
+            // ── Offline Voice-to-Note Listening Pill (EN / HI Language Toggle) ──
+            AnimatedVisibility(
+                visible = isListening || speechState is SpeechState.Error || speechState is SpeechState.DownloadingModel,
+                enter = fadeIn(tween(180)) + slideInVertically(tween(180)) { it / 2 },
+                exit = fadeOut(tween(120)) + slideOutVertically(tween(120)) { it / 2 },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 6.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    VoiceListeningPill(
+                        state = speechState,
+                        language = voiceLanguage,
+                        theme = theme,
+                        accentColor = accentColor.value,
+                        textColor = textColor.value,
+                        secondaryColor = secondaryColor.value,
+                        onToggleLanguage = {
+                            val nextLang = if (voiceLanguage == VoiceLanguage.ENGLISH) VoiceLanguage.HINDI else VoiceLanguage.ENGLISH
+                            voiceLanguage = nextLang
+                            if (isListening) {
+                                VoiceToNoteEngine.startListening(
+                                    context = context,
+                                    language = nextLang,
+                                    onTier3Fallback = launchSystemSpeechOrPrompt,
+                                    onStateChange = { speechState = it }
+                                )
+                            }
+                        },
+                        onStop = { VoiceToNoteEngine.stopListening() },
+                        onDismiss = { speechState = SpeechState.Idle },
+                    )
+                }
+            }
+
+            // ── Formatting Toolbar (Bold, Italic, 3 Highlights, Mic, EN/HI Toggle) ──
             FormattingToolbar(
                 theme = theme,
                 isLocked = activeNote.isLocked,
+                isListening = isListening,
+                voiceLanguage = voiceLanguage,
                 onFormat = { format ->
                     val updated = TextFormatHelper.toggleFormat(textFieldValue, format)
                     textFieldValue = updated
+                    lastEmittedText = updated.text
                     onTextChanged(updated.text)
                 },
                 onClearFormat = {
                     val updated = TextFormatHelper.clearFormatting(textFieldValue)
                     textFieldValue = updated
+                    lastEmittedText = updated.text
                     onTextChanged(updated.text)
                 },
                 onToggleLock = {
                     onToggleLockRequested(activeNote.id, !activeNote.isLocked)
+                },
+                onToggleMic = onToggleVoice,
+                onToggleLanguage = {
+                    val nextLang = if (voiceLanguage == VoiceLanguage.ENGLISH) VoiceLanguage.HINDI else VoiceLanguage.ENGLISH
+                    voiceLanguage = nextLang
+                    if (isListening) {
+                        VoiceToNoteEngine.safeCancel()
+                        coroutineScope.launch {
+                            kotlinx.coroutines.delay(300L)
+                            VoiceToNoteEngine.startListening(
+                                context = context,
+                                language = nextLang,
+                                onTier3Fallback = launchSystemSpeechOrPrompt,
+                                onStateChange = { speechState = it }
+                            )
+                        }
+                    }
                 }
             )
 
@@ -544,6 +785,45 @@ fun NoteScreen(
                 onDismiss = onRenameDialogDismissed,
             )
         }
+
+        // ── Microphone Permission Rationale Dialog ─────
+        if (showAudioPermissionDialog) {
+            AlertDialog(
+                onDismissRequest = { showAudioPermissionDialog = false },
+                containerColor = theme.surfaceVariant,
+                title = {
+                    Text(
+                        text = "Microphone Access",
+                        color = theme.onSurface,
+                        fontSize = 17.sp,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                },
+                text = {
+                    Text(
+                        text = "Typo Poster transcribes your voice 100% offline directly on your device in English and Hindi. No audio is ever recorded or uploaded to any server.",
+                        color = secondaryColor.value,
+                        fontSize = 13.sp,
+                        lineHeight = 18.sp,
+                    )
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            showAudioPermissionDialog = false
+                            audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                        }
+                    ) {
+                        Text("Grant Permission", color = accentColor.value, fontWeight = FontWeight.SemiBold)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showAudioPermissionDialog = false }) {
+                        Text("Not Now", color = secondaryColor.value)
+                    }
+                }
+            )
+        }
     }
 }
 
@@ -555,9 +835,13 @@ fun NoteScreen(
 private fun FormattingToolbar(
     theme: PosterTheme,
     isLocked: Boolean,
+    isListening: Boolean,
+    voiceLanguage: VoiceLanguage,
     onFormat: (FormatType) -> Unit,
     onClearFormat: () -> Unit,
     onToggleLock: () -> Unit,
+    onToggleMic: () -> Unit,
+    onToggleLanguage: () -> Unit,
 ) {
     Row(
         modifier = Modifier
@@ -570,9 +854,10 @@ private fun FormattingToolbar(
             modifier = Modifier
                 .clip(RoundedCornerShape(22.dp))
                 .background(theme.surfaceVariant.copy(alpha = 0.9f))
-                .padding(horizontal = 14.dp, vertical = 7.dp),
+                .horizontalScroll(rememberScrollState())
+                .padding(horizontal = 12.dp, vertical = 7.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(14.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             // Bold button
             Text(
@@ -676,6 +961,55 @@ private fun FormattingToolbar(
                     .size(16.dp)
                     .clip(CircleShape)
                     .clickable(onClick = onToggleLock)
+                    .padding(1.dp),
+            )
+
+            // Divider
+            Box(
+                modifier = Modifier
+                    .width(1.dp)
+                    .height(14.dp)
+                    .background(theme.textSecondary.copy(alpha = 0.3f))
+            )
+
+            // Language Toggle [ EN | HI ] right on the toolbar
+            Row(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(theme.background.copy(alpha = 0.5f))
+                    .clickable(onClick = onToggleLanguage)
+                    .padding(horizontal = 6.dp, vertical = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(3.dp)
+            ) {
+                Text(
+                    text = "EN",
+                    color = if (voiceLanguage == VoiceLanguage.ENGLISH) theme.accent else theme.textSecondary.copy(alpha = 0.45f),
+                    fontSize = 10.sp,
+                    fontWeight = if (voiceLanguage == VoiceLanguage.ENGLISH) FontWeight.ExtraBold else FontWeight.Normal
+                )
+                Text(
+                    text = "|",
+                    color = theme.textSecondary.copy(alpha = 0.3f),
+                    fontSize = 9.sp
+                )
+                Text(
+                    text = "HI",
+                    color = if (voiceLanguage == VoiceLanguage.HINDI) theme.accent else theme.textSecondary.copy(alpha = 0.45f),
+                    fontSize = 10.sp,
+                    fontWeight = if (voiceLanguage == VoiceLanguage.HINDI) FontWeight.ExtraBold else FontWeight.Normal
+                )
+            }
+
+            // Minimal Mic Button (Voice-to-Note)
+            Icon(
+                painter = painterResource(id = R.drawable.ic_mic),
+                contentDescription = if (isListening) "Stop listening" else "Voice to Note (${voiceLanguage.shortLabel})",
+                tint = if (isListening) theme.accent else theme.textSecondary.copy(alpha = 0.75f),
+                modifier = Modifier
+                    .size(17.dp)
+                    .clip(CircleShape)
+                    .clickable(onClick = onToggleMic)
                     .padding(1.dp),
             )
         }
@@ -1013,6 +1347,154 @@ private fun RedactedPosterLockView(
                         fontSize = 10.sp,
                         fontWeight = FontWeight.Medium,
                     )
+                }
+            }
+        }
+    }
+}
+
+private fun insertSpeechText(current: TextFieldValue, recognized: String): TextFieldValue {
+    val text = current.text
+    val start = current.selection.min.coerceIn(0, text.length)
+    val end = current.selection.max.coerceIn(0, text.length)
+
+    val prefix = if (start > 0 && !text[start - 1].isWhitespace()) " " else ""
+    val toInsert = prefix + recognized.trim() + " "
+    val newText = text.substring(0, start) + toInsert + text.substring(end)
+    val newCursor = start + toInsert.length
+    return TextFieldValue(text = newText, selection = TextRange(newCursor))
+}
+
+@Composable
+private fun VoiceListeningPill(
+    state: SpeechState,
+    language: VoiceLanguage,
+    theme: PosterTheme,
+    accentColor: Color,
+    textColor: Color,
+    secondaryColor: Color,
+    onToggleLanguage: () -> Unit,
+    onStop: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    Surface(
+        modifier = Modifier
+            .shadow(6.dp, RoundedCornerShape(22.dp))
+            .clip(RoundedCornerShape(22.dp)),
+        shape = RoundedCornerShape(22.dp),
+        color = theme.surfaceVariant,
+        border = androidx.compose.foundation.BorderStroke(1.2.dp, accentColor),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            when (state) {
+                is SpeechState.Error -> {
+                    Text(
+                        text = "!",
+                        color = accentColor,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 14.sp
+                    )
+                    Text(
+                        text = state.message,
+                        color = textColor,
+                        fontSize = 12.sp,
+                        fontFamily = theme.bodyFont,
+                        maxLines = 1,
+                        modifier = Modifier.weight(1f, fill = false)
+                    )
+                    Text(
+                        text = "Dismiss",
+                        color = secondaryColor,
+                        fontSize = 11.sp,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(4.dp))
+                            .clickable(onClick = onDismiss)
+                            .padding(horizontal = 4.dp, vertical = 2.dp)
+                    )
+                }
+                is SpeechState.DownloadingModel -> {
+                    Text(
+                        text = "Downloading offline pack: ${state.progress}%",
+                        color = textColor,
+                        fontSize = 12.sp,
+                        fontFamily = theme.bodyFont
+                    )
+                }
+                else -> {
+                    // Pulsing Red / Accent Recording Dot
+                    Box(
+                        modifier = Modifier
+                            .size(8.dp)
+                            .clip(CircleShape)
+                            .background(accentColor)
+                    )
+
+                    // Interim speech or listening prompt
+                    val displayText = if (state is SpeechState.InterimResult && state.partialText.isNotBlank()) {
+                        "\"${state.partialText}\""
+                    } else {
+                        if (language == VoiceLanguage.HINDI) "Listening (बोलिए)..." else "Listening..."
+                    }
+
+                    Text(
+                        text = displayText,
+                        color = textColor,
+                        fontSize = 13.sp,
+                        fontFamily = theme.bodyFont,
+                        fontWeight = FontWeight.Medium,
+                        maxLines = 1,
+                        modifier = Modifier.weight(1f, fill = false)
+                    )
+
+                    // Tiny Language Toggle: [ EN | HI ]
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(theme.background.copy(alpha = 0.6f))
+                            .clickable(onClick = onToggleLanguage)
+                            .padding(horizontal = 6.dp, vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            text = "EN",
+                            color = if (language == VoiceLanguage.ENGLISH) accentColor else secondaryColor.copy(alpha = 0.5f),
+                            fontSize = 10.sp,
+                            fontWeight = if (language == VoiceLanguage.ENGLISH) FontWeight.Bold else FontWeight.Normal
+                        )
+                        Text(
+                            text = "|",
+                            color = secondaryColor.copy(alpha = 0.3f),
+                            fontSize = 9.sp
+                        )
+                        Text(
+                            text = "HI",
+                            color = if (language == VoiceLanguage.HINDI) accentColor else secondaryColor.copy(alpha = 0.5f),
+                            fontSize = 10.sp,
+                            fontWeight = if (language == VoiceLanguage.HINDI) FontWeight.Bold else FontWeight.Normal
+                        )
+                    }
+
+                    // Prominent Done button to click when speech is over
+                    Surface(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable(onClick = onStop),
+                        color = accentColor,
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text(
+                            text = if (language == VoiceLanguage.HINDI) "Done ✓" else "Done ✓",
+                            color = theme.background,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp)
+                        )
+                    }
                 }
             }
         }

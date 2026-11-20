@@ -16,6 +16,8 @@ import com.typoposter.app.theme.ThemeEngine
 import com.typoposter.app.widget.NoteWidget
 import com.typoposter.app.widget.NoteWidgetReceiver
 import com.typoposter.app.widget.PinWidgetReceiver
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 
@@ -46,10 +48,16 @@ class NoteViewModel(application: Application) : AndroidViewModel(application) {
                 val active = notesList.firstOrNull { it.id == activeId }
                     ?: notesList.firstOrNull()
                     ?: Note()
+                val currentActive = _uiState.value.activeNote
+                val resolvedActive = if (active.id == currentActive.id && currentActive.updatedAt > active.updatedAt) {
+                    currentActive
+                } else {
+                    active
+                }
                 _uiState.value.copy(
                     notes = notesList,
-                    activeNote = active,
-                    theme = ThemeEngine.getTheme(active.themeIndex),
+                    activeNote = resolvedActive,
+                    theme = ThemeEngine.getTheme(resolvedActive.themeIndex),
                 )
             }.collect { state ->
                 _uiState.value = state
@@ -92,14 +100,21 @@ class NoteViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private var saveTextJob: Job? = null
+
     fun updateNoteText(text: String) {
         val current = _uiState.value.activeNote.copy(
             content = text,
             updatedAt = System.currentTimeMillis()
         )
+        // Instant in-memory state update for 0ms editing latency
         _uiState.update { it.copy(activeNote = current) }
 
-        viewModelScope.launch {
+        // Debounce disk persistence and widget broadcast by 250ms
+        // so rapid typing or holding down backspace runs at full 120Hz without I/O stutter
+        saveTextJob?.cancel()
+        saveTextJob = viewModelScope.launch {
+            delay(250L)
             store.saveNote(current)
             NoteWidget.updateWidgetForNote(getApplication(), current)
         }

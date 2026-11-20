@@ -32,6 +32,7 @@ import com.typoposter.app.data.NoteStore
 import com.typoposter.app.date.CountdownHelper
 import com.typoposter.app.theme.TextFormatHelper
 import com.typoposter.app.theme.ThemeEngine
+import com.typoposter.app.ui.VoiceOverlayActivity
 import kotlinx.coroutines.flow.first
 
 // ─────────────────────────────────────────────────────────────
@@ -297,14 +298,58 @@ private fun NoteWidgetContent(
                         colorFilter = ColorFilter.tint(ColorProvider(theme.accent)),
                         modifier = GlanceModifier.size(14.dp)
                     )
-                } else {
-                    // 1-tap Camera Scan button directly inside widget header
-                    Image(
-                        provider = ImageProvider(R.drawable.ic_camera),
-                        contentDescription = "Scan Text",
-                        colorFilter = ColorFilter.tint(ColorProvider(theme.textSecondary)),
+                    Spacer(modifier = GlanceModifier.width(10.dp))
+                    Box(
                         modifier = GlanceModifier
-                            .size(15.dp)
+                            .size(40.dp)
+                            .background(theme.surfaceVariant.copy(alpha = 0.65f))
+                            .cornerRadius(20.dp)
+                            .clickable(
+                                actionStartActivity<VoiceOverlayActivity>(
+                                    actionParametersOf(
+                                        NoteWidget.PARAM_NOTE_ID to noteId
+                                    )
+                                )
+                            ),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Image(
+                            provider = ImageProvider(R.drawable.ic_mic),
+                            contentDescription = "Voice Note",
+                            colorFilter = ColorFilter.tint(ColorProvider(theme.textSecondary)),
+                            modifier = GlanceModifier.size(18.dp)
+                        )
+                    }
+                } else {
+                    // 1-tap Voice-to-Note Floating Overlay trigger (40dp x 40dp touch target chip)
+                    Box(
+                        modifier = GlanceModifier
+                            .size(40.dp)
+                            .background(theme.surfaceVariant.copy(alpha = 0.65f))
+                            .cornerRadius(20.dp)
+                            .clickable(
+                                actionStartActivity<VoiceOverlayActivity>(
+                                    actionParametersOf(
+                                        NoteWidget.PARAM_NOTE_ID to noteId
+                                    )
+                                )
+                            ),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Image(
+                            provider = ImageProvider(R.drawable.ic_mic),
+                            contentDescription = "Voice Note",
+                            colorFilter = ColorFilter.tint(ColorProvider(theme.accent)),
+                            modifier = GlanceModifier.size(18.dp)
+                        )
+                    }
+                    Spacer(modifier = GlanceModifier.width(10.dp))
+                    // 1-tap Camera Scan button (40dp x 40dp touch target chip)
+                    Box(
+                        modifier = GlanceModifier
+                            .size(40.dp)
+                            .background(theme.surfaceVariant.copy(alpha = 0.65f))
+                            .cornerRadius(20.dp)
                             .clickable(
                                 actionStartActivity<MainActivity>(
                                     actionParametersOf(
@@ -312,8 +357,16 @@ private fun NoteWidgetContent(
                                         NoteWidget.PARAM_ACTION to "ACTION_SCAN"
                                     )
                                 )
-                            )
-                    )
+                            ),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Image(
+                            provider = ImageProvider(R.drawable.ic_camera),
+                            contentDescription = "Scan Text",
+                            colorFilter = ColorFilter.tint(ColorProvider(theme.textSecondary)),
+                            modifier = GlanceModifier.size(18.dp)
+                        )
+                    }
                 }
 
                 if (size.width >= MEDIUM.width) {

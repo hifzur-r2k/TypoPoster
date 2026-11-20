@@ -11,3 +11,9 @@
 build.log
 *.apk
 *.aab
+.gradle/
+build/
+app/build/
+local.properties
+*.apk
+.idea/
