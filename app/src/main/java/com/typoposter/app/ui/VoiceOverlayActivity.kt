@@ -7,6 +7,7 @@ import android.os.Bundle
 import android.speech.SpeechRecognizer
 import android.view.HapticFeedbackConstants
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
@@ -54,10 +55,12 @@ import androidx.lifecycle.lifecycleScope
 import com.typoposter.app.data.Note
 import com.typoposter.app.data.NoteStore
 import com.typoposter.app.date.CountdownHelper
+import com.typoposter.app.date.UrgencyTier
 import com.typoposter.app.theme.PosterTheme
 import com.typoposter.app.theme.ThemeEngine
 import com.typoposter.app.voice.SpeechState
 import com.typoposter.app.voice.SpokenDateParser
+import com.typoposter.app.voice.SpokenMathParser
 import com.typoposter.app.voice.VoiceLanguage
 import com.typoposter.app.voice.VoiceToNoteEngine
 import com.typoposter.app.widget.NoteWidget
@@ -127,7 +130,6 @@ class VoiceOverlayActivity : ComponentActivity() {
             if (isLoaded) {
                 VoiceOverlayScreen(
                     theme = theme,
-                    boundNote = activeNote,
                     onDismiss = {
                         VoiceToNoteEngine.cancelListening()
                         finish()
@@ -195,7 +197,6 @@ class VoiceOverlayActivity : ComponentActivity() {
 @Composable
 private fun VoiceOverlayScreen(
     theme: PosterTheme,
-    boundNote: Note?,
     onDismiss: () -> Unit,
     onSaveNote: (String) -> Unit,
 ) {
@@ -292,6 +293,39 @@ private fun VoiceOverlayScreen(
         label = "status_dot_pulse"
     )
 
+    // Fallback system speech recognition launcher (100% compatibility across all Android phones)
+    val speechIntentLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == android.app.Activity.RESULT_OK) {
+            val matches = result.data?.getStringArrayListExtra(android.speech.RecognizerIntent.EXTRA_RESULTS)
+            val spoken = matches?.firstOrNull() ?: ""
+            if (spoken.isNotBlank()) {
+                val converted = SpokenDateParser.convert(spoken)
+                val mathParsed = SpokenMathParser.parse(converted)
+                committedText = if (committedText.isBlank()) mathParsed else "$committedText $mathParsed"
+            }
+        }
+        isListening = false
+    }
+
+    val launchSystemSpeech: () -> Unit = {
+        try {
+            val intent = android.content.Intent(android.speech.RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                putExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE_MODEL, android.speech.RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                putExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE, language.tag)
+                putExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, language.tag)
+                putExtra(
+                    android.speech.RecognizerIntent.EXTRA_PROMPT,
+                    if (language == VoiceLanguage.HINDI) "बोलिए..." else "Speak note or deadline..."
+                )
+            }
+            speechIntentLauncher.launch(intent)
+        } catch (_: Throwable) {
+            errorMessage = "Voice recognition unavailable on this device"
+        }
+    }
+
     // Start recognition callback
     fun startRecognition() {
         if (!isPaused && ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
@@ -299,6 +333,7 @@ private fun VoiceOverlayScreen(
             VoiceToNoteEngine.startListening(
                 context = context,
                 language = language,
+                onTier3Fallback = launchSystemSpeech,
                 onStateChange = { state ->
                     when (state) {
                         is SpeechState.Listening -> {
@@ -314,7 +349,8 @@ private fun VoiceOverlayScreen(
                         }
                         is SpeechState.FinalResult -> {
                             // Append finalized phrase smoothly to committedText with proper spacing
-                            val phrase = state.convertedText.trim()
+                            val mathParsed = SpokenMathParser.parse(state.convertedText)
+                            val phrase = mathParsed.trim()
                             if (phrase.isNotBlank()) {
                                 committedText = if (committedText.isBlank()) phrase else "$committedText $phrase"
                             }
@@ -420,6 +456,7 @@ private fun VoiceOverlayScreen(
     Box(
         modifier = Modifier
             .fillMaxSize()
+            .background(Color.Black.copy(alpha = if (theme.isDark) 0.65f else 0.40f))
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,
@@ -427,7 +464,10 @@ private fun VoiceOverlayScreen(
             ),
         contentAlignment = Alignment.Center
     ) {
-        // Floating Minimalist Matte Card (28dp corners, 1dp low-opacity border, soft elevation)
+        // Theme-Synchronized Card Surface
+        val cardBg = if (theme.isDark) theme.surfaceVariant else Color(0xFFFAF7F2)
+        val cardBorderColor = theme.textPrimary.copy(alpha = if (theme.isDark) 0.12f else 0.09f)
+
         Surface(
             modifier = Modifier
                 .fillMaxWidth(0.90f)
@@ -438,15 +478,15 @@ private fun VoiceOverlayScreen(
                     onClick = {} // Consume click inside card
                 )
                 .shadow(
-                    elevation = 20.dp,
-                    shape = RoundedCornerShape(28.dp),
-                    spotColor = Color.Black.copy(alpha = 0.45f),
-                    ambientColor = Color.Black.copy(alpha = 0.55f)
+                    elevation = 18.dp,
+                    shape = RoundedCornerShape(26.dp),
+                    spotColor = Color.Black.copy(alpha = if (theme.isDark) 0.48f else 0.16f),
+                    ambientColor = Color.Black.copy(alpha = if (theme.isDark) 0.38f else 0.10f)
                 )
-                .clip(RoundedCornerShape(28.dp))
-                .border(1.dp, theme.textSecondary.copy(alpha = 0.14f), RoundedCornerShape(28.dp)),
-            color = theme.surfaceVariant,
-            shape = RoundedCornerShape(28.dp)
+                .clip(RoundedCornerShape(26.dp))
+                .border(1.dp, cardBorderColor, RoundedCornerShape(26.dp)),
+            color = cardBg,
+            shape = RoundedCornerShape(26.dp)
         ) {
             Column(
                 modifier = Modifier
@@ -455,46 +495,44 @@ private fun VoiceOverlayScreen(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
-                // ── Top Bar: Active Note Title & Animated Sliding Language Toggle (EN | HI) ──
+                // ── Top Bar: Subtle NOTE label & Minimal Segmented Toggle (EN | HI) ──
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // Status dot + Note title
+                    // Small muted indicator dot + subtle tracked uppercase NOTE label
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(7.dp)
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         val dotColor = when {
                             errorMessage != null -> Color(0xFFFFB236)
-                            isPaused -> theme.textSecondary.copy(alpha = 0.4f)
-                            isListening -> theme.accent.copy(alpha = statusDotPulse)
-                            else -> theme.accent.copy(alpha = 0.6f)
+                            isPaused -> theme.textSecondary.copy(alpha = 0.35f)
+                            isListening -> (if (theme.isDark) theme.accent else theme.textPrimary).copy(alpha = statusDotPulse)
+                            else -> theme.textSecondary.copy(alpha = 0.45f)
                         }
                         Box(
                             modifier = Modifier
-                                .size(7.dp)
+                                .size(6.dp)
                                 .clip(CircleShape)
                                 .background(dotColor)
                         )
                         Text(
-                            text = if (boundNote?.isLocked == true) "NEW VOICE NOTE" else (boundNote?.title?.uppercase() ?: "TYPO BOT"),
+                            text = "NOTE",
                             fontSize = 11.sp,
                             fontFamily = theme.headerFont,
-                            fontWeight = FontWeight.Bold,
-                            color = theme.textSecondary.copy(alpha = 0.8f),
-                            letterSpacing = 1.2.sp
+                            fontWeight = FontWeight.SemiBold,
+                            color = theme.textSecondary.copy(alpha = 0.70f),
+                            letterSpacing = 2.sp
                         )
                     }
 
-                    // Sleek Sliding Pill Toggle (EN | HI)
+                    // Refined Minimal Segmented Pill Toggle (EN | HI)
                     LanguageSlidingToggle(
                         currentLanguage = language,
                         onLanguageSelected = switchLanguage,
-                        accentColor = theme.accent,
-                        textColor = theme.textPrimary,
-                        backgroundColor = theme.background
+                        theme = theme
                     )
                 }
 
@@ -524,8 +562,7 @@ private fun VoiceOverlayScreen(
                         isBlinking = isBlinking,
                         showHappyEyes = showHappyEyes,
                         errorMessage = errorMessage,
-                        amplitude = animatedRms,
-                        language = language
+                        amplitude = animatedRms
                     )
                 }
 
@@ -546,18 +583,18 @@ private fun VoiceOverlayScreen(
                         val statusText = when {
                             errorMessage != null -> "Tap to retry"
                             isPaused -> "Paused"
-                            isConnecting -> "Switching..."
+                            isConnecting -> "Connecting..."
                             language == VoiceLanguage.HINDI -> "बोलिए..."
                             else -> "Listening..."
                         }
                         Text(
                             text = statusText,
-                            color = if (errorMessage != null) Color(0xFFFFB236) else theme.textSecondary.copy(alpha = 0.50f),
-                            fontSize = 15.sp,
-                            fontFamily = theme.headerFont,
-                            fontWeight = FontWeight.Medium,
+                            color = if (errorMessage != null) Color(0xFFFFB236) else theme.textSecondary.copy(alpha = 0.55f),
+                            fontSize = 14.sp,
+                            fontFamily = theme.bodyFont,
+                            fontWeight = FontWeight.Normal,
                             textAlign = TextAlign.Center,
-                            letterSpacing = 0.6.sp
+                            letterSpacing = 0.4.sp
                         )
                     } else {
                         Text(
@@ -592,13 +629,53 @@ private fun VoiceOverlayScreen(
                     exit = scaleOut() + fadeOut()
                 ) {
                     if (nearestDeadline != null) {
+                        val tier = nearestDeadline.urgencyTier
+                        val surfColor = when (tier) {
+                            UrgencyTier.IMMINENT -> theme.accent.copy(alpha = 0.24f)
+                            UrgencyTier.APPROACHING -> theme.accent.copy(alpha = 0.16f)
+                            UrgencyTier.CALM -> theme.surfaceVariant.copy(alpha = 0.75f)
+                        }
+                        val borderColor = when (tier) {
+                            UrgencyTier.IMMINENT -> theme.accent.copy(alpha = 0.65f)
+                            UrgencyTier.APPROACHING -> theme.accent.copy(alpha = 0.45f)
+                            UrgencyTier.CALM -> theme.textSecondary.copy(alpha = 0.30f)
+                        }
+                        val borderWidth = when (tier) {
+                            UrgencyTier.IMMINENT -> 1.2.dp
+                            UrgencyTier.APPROACHING -> 1.dp
+                            UrgencyTier.CALM -> 0.8.dp
+                        }
+                        val hPad = when (tier) {
+                            UrgencyTier.IMMINENT -> 14.dp
+                            UrgencyTier.APPROACHING -> 12.dp
+                            UrgencyTier.CALM -> 10.dp
+                        }
+                        val vPad = when (tier) {
+                            UrgencyTier.IMMINENT -> 6.dp
+                            UrgencyTier.APPROACHING -> 5.dp
+                            UrgencyTier.CALM -> 4.dp
+                        }
+                        val fSize = when (tier) {
+                            UrgencyTier.IMMINENT -> 12.sp
+                            UrgencyTier.APPROACHING -> 11.sp
+                            UrgencyTier.CALM -> 10.5.sp
+                        }
+                        val fWeight = when (tier) {
+                            UrgencyTier.IMMINENT -> FontWeight.Bold
+                            UrgencyTier.APPROACHING -> FontWeight.SemiBold
+                            UrgencyTier.CALM -> FontWeight.Medium
+                        }
+                        val txtColor = when (tier) {
+                            UrgencyTier.IMMINENT, UrgencyTier.APPROACHING -> theme.accent
+                            UrgencyTier.CALM -> theme.textSecondary
+                        }
                         Surface(
                             shape = RoundedCornerShape(12.dp),
-                            color = theme.accent.copy(alpha = 0.16f),
-                            border = androidx.compose.foundation.BorderStroke(1.dp, theme.accent.copy(alpha = 0.45f))
+                            color = surfColor,
+                            border = androidx.compose.foundation.BorderStroke(borderWidth, borderColor)
                         ) {
                             Row(
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp),
+                                modifier = Modifier.padding(horizontal = hPad, vertical = vPad),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
@@ -608,9 +685,9 @@ private fun VoiceOverlayScreen(
                                 )
                                 Text(
                                     text = nearestDeadline.compactLabel.uppercase(),
-                                    color = theme.accent,
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Bold,
+                                    color = txtColor,
+                                    fontSize = fSize,
+                                    fontWeight = fWeight,
                                     fontFamily = theme.headerFont,
                                     letterSpacing = 1.sp
                                 )
@@ -629,118 +706,84 @@ private fun VoiceOverlayScreen(
                         textAlign = TextAlign.Center,
                         modifier = Modifier.clickable {
                             isPaused = false
-                            startRecognition()
+                            launchSystemSpeech()
                         }
                     )
                 }
 
-                // ── Clean 3-Control Footer: Cancel | Tactile Pause/Resume | Solid Save Pill ──
+                // ── Clean 3-Control Footer: Cancel | Clean Matte Pause/Resume | Confident Save Pill ──
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // Left: Subtle Cancel Button
+                    // Left: Understated Cancel Button
                     TextButton(
                         onClick = onDismiss,
-                        shape = RoundedCornerShape(14.dp)
+                        shape = RoundedCornerShape(12.dp)
                     ) {
                         Text(
                             text = "Cancel",
-                            color = theme.textSecondary.copy(alpha = 0.75f),
+                            color = theme.textSecondary.copy(alpha = 0.70f),
                             fontSize = 13.sp,
-                            fontFamily = theme.bodyFont
+                            fontFamily = theme.bodyFont,
+                            fontWeight = FontWeight.Medium
                         )
                     }
 
-                    // Center: Tactile Circular Pause / Resume Button with Pulsing Concentric Glow Ring
-                    val ringTransition = rememberInfiniteTransition(label = "pulse_ring_trans")
-                    val ringScale by ringTransition.animateFloat(
-                        initialValue = 1.0f,
-                        targetValue = 1.42f,
-                        animationSpec = infiniteRepeatable(
-                            animation = tween(1300, easing = FastOutSlowInEasing),
-                            repeatMode = RepeatMode.Restart
-                        ),
-                        label = "concentric_ring_scale"
-                    )
-                    val ringAlpha by ringTransition.animateFloat(
-                        initialValue = 0.52f,
-                        targetValue = 0.0f,
-                        animationSpec = infiniteRepeatable(
-                            animation = tween(1300, easing = FastOutSlowInEasing),
-                            repeatMode = RepeatMode.Restart
-                        ),
-                        label = "concentric_ring_alpha"
-                    )
-
+                    // Center: Clean matte-filled circular Pause / Resume button (no neon ring)
                     Box(
-                        modifier = Modifier.size(54.dp),
+                        modifier = Modifier
+                            .size(44.dp)
+                            .clip(CircleShape)
+                            .background(
+                                if (isPaused) theme.textPrimary.copy(alpha = 0.12f)
+                                else theme.textPrimary.copy(alpha = 0.07f)
+                            )
+                            .border(
+                                width = 1.dp,
+                                color = theme.textPrimary.copy(alpha = if (isPaused) 0.20f else 0.12f),
+                                shape = CircleShape
+                            )
+                            .clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null
+                            ) {
+                                view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                                togglePause()
+                            },
                         contentAlignment = Alignment.Center
                     ) {
-                        // Pulsing concentric ring only while actively listening
-                        if (isListening && !isPaused) {
-                            Box(
-                                modifier = Modifier
-                                    .size(46.dp * ringScale)
-                                    .clip(CircleShape)
-                                    .border(1.2.dp, theme.accent.copy(alpha = ringAlpha), CircleShape)
+                        if (isPaused) {
+                            Text(
+                                text = "▶",
+                                fontSize = 13.sp,
+                                color = theme.textPrimary,
+                                modifier = Modifier.offset(x = 1.dp)
                             )
-                        }
-
-                        // Button body
-                        Box(
-                            modifier = Modifier
-                                .size(46.dp)
-                                .clip(CircleShape)
-                                .background(if (isPaused) theme.accent.copy(alpha = 0.18f) else theme.surfaceVariant)
-                                .border(
-                                    width = 1.2.dp,
-                                    color = if (isPaused) theme.textSecondary.copy(alpha = 0.40f) else theme.accent.copy(alpha = 0.65f),
-                                    shape = CircleShape
-                                )
-                                .clickable(
-                                    interactionSource = remember { MutableInteractionSource() },
-                                    indication = null
-                                ) {
-                                    view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                                    togglePause()
-                                },
-                            contentAlignment = Alignment.Center
-                        ) {
-                            if (isPaused) {
-                                Text(
-                                    text = "▶",
-                                    fontSize = 14.sp,
-                                    color = theme.accent,
-                                    modifier = Modifier.offset(x = 1.dp)
-                                )
-                            } else {
-                                Text(
-                                    text = "❚❚",
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = theme.accent
-                                )
-                            }
+                        } else {
+                            Text(
+                                text = "❚❚",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = theme.textPrimary
+                            )
                         }
                     }
 
-                    // Right: Solid High-Contrast Save Pill (Disabled if transcript is empty)
+                    // Right: Confident, High-Contrast Save Pill that activates smoothly once text is present
                     val hasText = fullTranscript.isNotBlank()
-                    val isBrightAccent = (0.299f * theme.accent.red + 0.587f * theme.accent.green + 0.114f * theme.accent.blue) > 0.5f
-
-                    val saveContainerColor by animateColorAsState(
-                        targetValue = if (hasText) theme.accent else theme.textSecondary.copy(alpha = 0.10f),
-                        animationSpec = tween(220),
-                        label = "save_container_color"
+                    val saveBg by animateColorAsState(
+                        targetValue = if (hasText) theme.textPrimary else theme.textPrimary.copy(alpha = 0.07f),
+                        animationSpec = tween(200),
+                        label = "save_bg"
                     )
-                    val saveContentColor by animateColorAsState(
+                    val saveText by animateColorAsState(
                         targetValue = if (hasText) {
-                            if (isBrightAccent) Color(0xFF101214) else Color.White
+                            if (theme.isDark) Color(0xFF101214) else Color.White
                         } else theme.textSecondary.copy(alpha = 0.35f),
-                        animationSpec = tween(220),
-                        label = "save_content_color"
+                        animationSpec = tween(200),
+                        label = "save_text"
                     )
 
                     Button(
@@ -749,8 +792,8 @@ private fun VoiceOverlayScreen(
                                 view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
                                 showHappyEyes = true
                                 coroutineScope.launch {
-                                    // 240ms celebratory hop before closing cleanly
-                                    delay(240L)
+                                    // 220ms celebratory hop before closing cleanly
+                                    delay(220L)
                                     onSaveNote(fullTranscript)
                                 }
                             }
@@ -758,18 +801,18 @@ private fun VoiceOverlayScreen(
                         enabled = hasText,
                         shape = CircleShape,
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = saveContainerColor,
-                            contentColor = saveContentColor,
-                            disabledContainerColor = theme.textSecondary.copy(alpha = 0.10f),
+                            containerColor = saveBg,
+                            contentColor = saveText,
+                            disabledContainerColor = theme.textPrimary.copy(alpha = 0.07f),
                             disabledContentColor = theme.textSecondary.copy(alpha = 0.35f)
                         ),
-                        contentPadding = PaddingValues(horizontal = 22.dp, vertical = 9.dp),
+                        contentPadding = PaddingValues(horizontal = 20.dp, vertical = 9.dp),
                         modifier = Modifier.height(38.dp)
                     ) {
                         Text(
                             text = "Save ✓",
                             fontSize = 12.sp,
-                            fontWeight = FontWeight.Bold,
+                            fontWeight = FontWeight.SemiBold,
                             fontFamily = theme.headerFont,
                             letterSpacing = 0.5.sp
                         )
@@ -803,7 +846,6 @@ private fun TypoBotCircularCompanion(
     showHappyEyes: Boolean,
     errorMessage: String?,
     amplitude: Float,
-    language: VoiceLanguage,
     modifier: Modifier = Modifier
 ) {
     val accentColor = theme.accent
@@ -925,65 +967,79 @@ private fun TypoBotCircularCompanion(
         val cy = h / 2f + animatedBobY.dp.toPx() + celebrationHop.dp.toPx()
         val headR = 52.dp.toPx() // ~104dp diameter circular mascot head
 
-        // ── A. Delicate Soundwave Ripple Rings (Expanding outside circular bot body) ──
-        if (!isPaused && !isError && isListening) {
-            // Ring 1: Real-time RMS expansion ring
-            val r1 = headR + 2.5.dp.toPx() + (amplitude * 12.dp.toPx())
-            val alpha1 = (amplitude * 0.70f).coerceIn(0f, 0.70f)
-            if (alpha1 > 0.02f) {
-                drawCircle(
-                    color = accentColor.copy(alpha = alpha1),
-                    radius = r1,
-                    center = Offset(cx, cy),
-                    style = Stroke(width = 1.6.dp.toPx())
-                )
-            }
+        // Grounded Drop Shadow under the bot so it feels like a physical minimalist object resting on the card
+        val shadowW = headR * 1.30f
+        val shadowH = 10.dp.toPx()
+        val shadowY = cy + headR * 0.94f
+        drawOval(
+            brush = Brush.radialGradient(
+                colors = listOf(Color.Black.copy(alpha = if (theme.isDark) 0.35f else 0.14f), Color.Transparent),
+                center = Offset(cx, shadowY),
+                radius = shadowW / 2f
+            ),
+            topLeft = Offset(cx - shadowW / 2f, shadowY - shadowH / 2f),
+            size = Size(shadowW, shadowH)
+        )
 
-            // Ring 2: Continuous traveling soundwave ripple
-            val r2 = headR + 2.dp.toPx() + ripplePhase * (14.dp.toPx() + amplitude * 10.dp.toPx())
-            val alpha2 = ((1f - ripplePhase) * amplitude * 0.55f).coerceIn(0f, 0.55f)
-            if (alpha2 > 0.02f) {
+        // ── A. Delicate Tonal Soundwave Rings (15–25% alpha, expanding smoothly with voice RMS) ──
+        if (!isPaused && !isError && isListening && amplitude > 0.03f) {
+            val waveColor = if (theme.isDark) theme.accent else theme.textPrimary
+            // Ring 1: Real-time RMS expansion ring (delicate hairline, 15-22% max alpha)
+            val r1 = headR + 3.dp.toPx() + (amplitude * 14.dp.toPx())
+            val alpha1 = (amplitude * 0.22f).coerceIn(0f, 0.22f)
+            drawCircle(
+                color = waveColor.copy(alpha = alpha1),
+                radius = r1,
+                center = Offset(cx, cy),
+                style = Stroke(width = 1.dp.toPx())
+            )
+
+            // Ring 2: Harmonic traveling ripple (delicate hairline, 10-16% max alpha)
+            val r2 = headR + 2.dp.toPx() + ripplePhase * (12.dp.toPx() + amplitude * 8.dp.toPx())
+            val alpha2 = ((1f - ripplePhase) * amplitude * 0.16f).coerceIn(0f, 0.16f)
+            if (alpha2 > 0.015f) {
                 drawCircle(
-                    color = accentColor.copy(alpha = alpha2),
+                    color = waveColor.copy(alpha = alpha2),
                     radius = r2,
                     center = Offset(cx, cy),
-                    style = Stroke(width = 1.2.dp.toPx())
+                    style = Stroke(width = 0.8.dp.toPx())
                 )
             }
         }
 
         // Language switching outer swirl pulse
         if (isConnecting) {
-            val swirlR = headR + 3.5.dp.toPx()
+            val swirlR = headR + 3.dp.toPx()
+            val swirlColor = if (theme.isDark) theme.accent else theme.textPrimary
             drawArc(
-                color = accentColor.copy(alpha = 0.65f),
+                color = swirlColor.copy(alpha = 0.25f),
                 startAngle = swirlPhase,
                 sweepAngle = 90f,
                 useCenter = false,
                 topLeft = Offset(cx - swirlR, cy - swirlR),
                 size = Size(swirlR * 2f, swirlR * 2f),
-                style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round)
+                style = Stroke(width = 1.2.dp.toPx(), cap = StrokeCap.Round)
             )
             drawArc(
-                color = accentColor.copy(alpha = 0.65f),
+                color = swirlColor.copy(alpha = 0.25f),
                 startAngle = swirlPhase + 180f,
                 sweepAngle = 90f,
                 useCenter = false,
                 topLeft = Offset(cx - swirlR, cy - swirlR),
                 size = Size(swirlR * 2f, swirlR * 2f),
-                style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round)
+                style = Stroke(width = 1.2.dp.toPx(), cap = StrokeCap.Round)
             )
         }
 
         // ── B. Soft Multi-Layer Ambient Radial Glow behind the circular bot ──
-        val ambientAlpha = if (isPaused) 0.04f else (0.10f + amplitude * 0.25f).coerceIn(0f, 0.38f)
+        val ambientAlpha = if (isPaused) 0.02f else (0.04f + amplitude * 0.10f).coerceIn(0f, 0.14f)
         drawCircle(
             brush = Brush.radialGradient(
                 colors = listOf(eyeColor.copy(alpha = ambientAlpha), Color.Transparent),
                 center = Offset(cx, cy),
-                radius = headR + 24.dp.toPx()
+                radius = headR + 20.dp.toPx()
             ),
-            radius = headR + 24.dp.toPx(),
+            radius = headR + 20.dp.toPx(),
             center = Offset(cx, cy)
         )
 
@@ -994,10 +1050,15 @@ private fun TypoBotCircularCompanion(
         withTransform({
             scale(scaleX = squashX, scaleY = squashY, pivot = Offset(cx, cy))
         }) {
-            // ── C. Smooth Circular Outer Shell (3D Depth & Light Catch) ──
-            val highlightCenter = Offset(cx - headR * 0.32f, cy - headR * 0.32f)
+            // ── C. Smooth Circular Outer Shell (Tactile Material Depth & Light Catch) ──
+            val shellColors = if (theme.isDark) {
+                listOf(Color(0xFF343840), Color(0xFF22252A), Color(0xFF141618))
+            } else {
+                listOf(Color(0xFFFFFFFF), Color(0xFFF4F0E8), Color(0xFFE2DDD4))
+            }
+            val highlightCenter = Offset(cx - headR * 0.28f, cy - headR * 0.32f)
             val shellBrush = Brush.radialGradient(
-                colors = listOf(Color(0xFF383C44), Color(0xFF22252A), Color(0xFF131518)),
+                colors = shellColors,
                 center = highlightCenter,
                 radius = headR * 1.35f
             )
@@ -1009,7 +1070,11 @@ private fun TypoBotCircularCompanion(
 
             // Delicate 1dp translucent rim highlight
             val rimBrush = Brush.linearGradient(
-                colors = listOf(Color.White.copy(alpha = 0.25f), Color.White.copy(alpha = 0.05f), Color.Transparent),
+                colors = if (theme.isDark) {
+                    listOf(Color.White.copy(alpha = 0.22f), Color.White.copy(alpha = 0.05f), Color.Transparent)
+                } else {
+                    listOf(Color.White.copy(alpha = 0.85f), Color.White.copy(alpha = 0.30f), Color.Transparent)
+                },
                 start = Offset(cx - headR, cy - headR),
                 end = Offset(cx + headR, cy + headR)
             )
@@ -1025,14 +1090,14 @@ private fun TypoBotCircularCompanion(
 
             // Recessed rim shadow
             drawCircle(
-                color = Color.Black.copy(alpha = 0.55f),
+                color = (if (theme.isDark) Color.Black else Color(0xFFC4BEB2)).copy(alpha = 0.45f),
                 radius = faceR + 1.2.dp.toPx(),
                 center = Offset(cx, cy),
-                style = Stroke(width = 2.dp.toPx())
+                style = Stroke(width = 1.6.dp.toPx())
             )
-            // Dark glass base
+            // Dark glass base with deep contrast
             drawCircle(
-                color = Color(0xFF07080A),
+                color = if (theme.isDark) Color(0xFF0C0E11) else Color(0xFF1C1E22),
                 radius = faceR,
                 center = Offset(cx, cy)
             )
@@ -1312,15 +1377,13 @@ private fun TypoBotCircularCompanion(
 }
 
 /**
- * Sleek Animated Sliding Pill Toggle for EN | HI.
+ * Refined Minimal Segmented Pill Toggle for EN | HI (Tonal contrast, no glowing border).
  */
 @Composable
 private fun LanguageSlidingToggle(
     currentLanguage: VoiceLanguage,
     onLanguageSelected: (VoiceLanguage) -> Unit,
-    accentColor: Color,
-    textColor: Color,
-    backgroundColor: Color,
+    theme: PosterTheme,
 ) {
     val selectedIndex = if (currentLanguage == VoiceLanguage.ENGLISH) 0 else 1
     val indicatorOffset by animateDpAsState(
@@ -1334,19 +1397,21 @@ private fun LanguageSlidingToggle(
             .width(74.dp)
             .height(28.dp)
             .clip(RoundedCornerShape(14.dp))
-            .background(backgroundColor.copy(alpha = 0.65f))
-            .border(1.dp, textColor.copy(alpha = 0.12f), RoundedCornerShape(14.dp)),
+            .background(theme.textPrimary.copy(alpha = 0.06f))
+            .border(1.dp, theme.textPrimary.copy(alpha = 0.10f), RoundedCornerShape(14.dp)),
         contentAlignment = Alignment.CenterStart
     ) {
-        // Sliding indicator pill
+        // Sliding active segment pill (clean elevated fill, crisp ink text, no glowing border)
+        val pillBg = if (theme.isDark) Color(0xFF2C3036) else Color.White
+        val pillBorder = theme.textPrimary.copy(alpha = if (theme.isDark) 0.14f else 0.08f)
         Box(
             modifier = Modifier
                 .offset(x = indicatorOffset)
                 .width(34.dp)
                 .height(22.dp)
                 .clip(RoundedCornerShape(11.dp))
-                .background(accentColor.copy(alpha = 0.20f))
-                .border(1.dp, accentColor.copy(alpha = 0.70f), RoundedCornerShape(11.dp))
+                .background(pillBg)
+                .border(0.8.dp, pillBorder, RoundedCornerShape(11.dp))
         )
 
         // Options
@@ -1370,7 +1435,7 @@ private fun LanguageSlidingToggle(
                     text = "EN",
                     fontSize = 11.sp,
                     fontWeight = if (selectedIndex == 0) FontWeight.Bold else FontWeight.Medium,
-                    color = if (selectedIndex == 0) accentColor else textColor.copy(alpha = 0.45f),
+                    color = if (selectedIndex == 0) theme.textPrimary else theme.textSecondary.copy(alpha = 0.50f),
                     letterSpacing = 0.5.sp
                 )
             }
@@ -1391,7 +1456,7 @@ private fun LanguageSlidingToggle(
                     text = "HI",
                     fontSize = 11.sp,
                     fontWeight = if (selectedIndex == 1) FontWeight.Bold else FontWeight.Medium,
-                    color = if (selectedIndex == 1) accentColor else textColor.copy(alpha = 0.45f),
+                    color = if (selectedIndex == 1) theme.textPrimary else theme.textSecondary.copy(alpha = 0.50f),
                     letterSpacing = 0.5.sp
                 )
             }

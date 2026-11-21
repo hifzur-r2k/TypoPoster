@@ -10,13 +10,13 @@ class VoiceToNoteEngineTest {
 
     @Test
     fun testVoiceLanguagesSupported() {
-        assertEquals("en-US", VoiceLanguage.ENGLISH.tag)
+        assertEquals("en-IN", VoiceLanguage.ENGLISH.tag)
         assertEquals("EN", VoiceLanguage.ENGLISH.shortLabel)
-        assertTrue(VoiceLanguage.ENGLISH.isOfflinePreferred)
+        assertEquals("English (India)", VoiceLanguage.ENGLISH.displayName)
 
         assertEquals("hi-IN", VoiceLanguage.HINDI.tag)
         assertEquals("HI", VoiceLanguage.HINDI.shortLabel)
-        assertFalse(VoiceLanguage.HINDI.isOfflinePreferred)
+        assertEquals("हिंदी (India)", VoiceLanguage.HINDI.displayName)
     }
 
     @Test
@@ -74,5 +74,42 @@ class VoiceToNoteEngineTest {
 
         val micErr = VoiceToNoteEngine.mapErrorCode(SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS, VoiceLanguage.ENGLISH)
         assertEquals("Microphone permission required (Error 9)", micErr)
+    }
+
+    @Test
+    fun testOlderDeviceAndClientErrorHandling() {
+        val clientErr = VoiceToNoteEngine.mapErrorCode(SpeechRecognizer.ERROR_CLIENT, VoiceLanguage.ENGLISH)
+        assertEquals("Speech recognition client error (Error 5)", clientErr)
+
+        val serverDiscErr = VoiceToNoteEngine.mapErrorCode(SpeechRecognizer.ERROR_SERVER_DISCONNECTED, VoiceLanguage.ENGLISH)
+        assertEquals("Server disconnected (Error 11)", serverDiscErr)
+
+        val busyErr = VoiceToNoteEngine.mapErrorCode(SpeechRecognizer.ERROR_RECOGNIZER_BUSY, VoiceLanguage.ENGLISH)
+        assertEquals("Speech recognizer busy (Error 8)", busyErr)
+
+        val errorState = SpeechState.Error(
+            message = clientErr,
+            errorCode = SpeechRecognizer.ERROR_CLIENT,
+            isServiceUnavailable = true
+        )
+        assertTrue(errorState.isServiceUnavailable)
+        assertEquals(SpeechRecognizer.ERROR_CLIENT, errorState.errorCode)
+    }
+
+    @Test
+    fun testLanguageOfflineSettingsForDeviceCompatibility() {
+        // EN & HI are online by default to leverage full Indian proper noun vocabulary
+        assertFalse(VoiceLanguage.ENGLISH.isOfflinePreferred)
+        assertFalse(VoiceLanguage.HINDI.isOfflinePreferred)
+    }
+
+    @Test
+    fun testContinuousDictationErrorCodes() {
+        // Code 6 (Speech timeout) and 7 (No match) error messages
+        val timeoutMsg = VoiceToNoteEngine.mapErrorCode(SpeechRecognizer.ERROR_SPEECH_TIMEOUT, VoiceLanguage.ENGLISH)
+        assertEquals("No speech detected (Error 6)", timeoutMsg)
+
+        val noMatchMsg = VoiceToNoteEngine.mapErrorCode(SpeechRecognizer.ERROR_NO_MATCH, VoiceLanguage.ENGLISH)
+        assertEquals("No speech recognized (Error 7)", noMatchMsg)
     }
 }

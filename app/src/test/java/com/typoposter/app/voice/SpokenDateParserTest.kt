@@ -3,6 +3,7 @@ package com.typoposter.app.voice
 import org.junit.Assert.assertEquals
 import org.junit.Test
 import java.time.LocalDate
+import java.time.LocalTime
 
 class SpokenDateParserTest {
 
@@ -165,5 +166,124 @@ class SpokenDateParserTest {
         // Words containing "kal" like "Kolkata" or "kalakar" must NOT be converted
         val text = "Trip to Kolkata with kalakar friends"
         assertEquals(text, SpokenDateParser.convert(text, fixedToday))
+    }
+
+    @Test
+    fun testSameDaySpokenTimesEnglish() {
+        assertEquals(
+            "finish task @2:00 PM",
+            SpokenDateParser.convert("finish task by 2pm", fixedToday)
+        )
+        assertEquals(
+            "sync @11:30 AM",
+            SpokenDateParser.convert("sync at 11:30am", fixedToday)
+        )
+        assertEquals(
+            "lunch @2:30 PM",
+            SpokenDateParser.convert("lunch by 2:30 pm", fixedToday)
+        )
+        assertEquals(
+            "call client @5:00 PM please",
+            SpokenDateParser.convert("call client at 5pm please", fixedToday)
+        )
+        assertEquals(
+            "standup @2:00 PM",
+            SpokenDateParser.convert("standup 2 pm", fixedToday)
+        )
+        assertEquals(
+            "server restart @2:00 PM",
+            SpokenDateParser.convert("server restart 14:00", fixedToday)
+        )
+    }
+
+    @Test
+    fun testSameDaySpokenTimesHindiHinglish() {
+        assertEquals(
+            "@2:00 PM meeting hai",
+            SpokenDateParser.convert("2 baje meeting hai", fixedToday)
+        )
+        assertEquals(
+            "kaam @2:00 PM complete karna",
+            SpokenDateParser.convert("kaam dopahar 2 baje tak complete karna", fixedToday)
+        )
+        assertEquals(
+            "call @5:00 PM",
+            SpokenDateParser.convert("call shaam 5 baje", fixedToday)
+        )
+        assertEquals(
+            "dinner @8:00 PM",
+            SpokenDateParser.convert("dinner raat 8 baje", fixedToday)
+        )
+        assertEquals(
+            "standup @9:00 AM",
+            SpokenDateParser.convert("standup subah 9 baje", fixedToday)
+        )
+        assertEquals(
+            "@2:00 PM कॉल करना",
+            SpokenDateParser.convert("दोपहर 2 बजे कॉल करना", fixedToday)
+        )
+        assertEquals(
+            "@5:00 PM मिलना",
+            SpokenDateParser.convert("शाम 5 बजे मिलना", fixedToday)
+        )
+        assertEquals(
+            "@2:00 PM रिपोर्ट देना",
+            SpokenDateParser.convert("2 बजे रिपोर्ट देना", fixedToday)
+        )
+    }
+
+    @Test
+    fun testDottedMeridiemAndSmartAmPm() {
+        val fixedTimeAt239Pm = LocalTime.of(14, 39) // 2:39 PM
+
+        // 1. Dotted meridiem "5 p.m." -> @5:00 PM (no trailing p.m.)
+        assertEquals(
+            "meeting @5:00 PM",
+            SpokenDateParser.convert("meeting at 5 p.m.", fixedToday, fixedTimeAt239Pm)
+        )
+
+        // 2. Dotted meridiem "5:30 p.m." -> @5:30 PM
+        assertEquals(
+            "@5:30 PM",
+            SpokenDateParser.convert("by 5:30 p.m.", fixedToday, fixedTimeAt239Pm)
+        )
+
+        // 3. Dotted meridiem "9 a.m." -> @9:00 AM
+        assertEquals(
+            "@9:00 AM",
+            SpokenDateParser.convert("at 9 a.m.", fixedToday, fixedTimeAt239Pm)
+        )
+
+        // 4. Bare "by 5" when current time is 2:39 PM -> Smart inference picks 5:00 PM
+        assertEquals(
+            "@5:00 PM",
+            SpokenDateParser.convert("by 5", fixedToday, fixedTimeAt239Pm)
+        )
+
+        // Additional edge cases:
+        // "meeting at 6:30" at 2:39 PM -> picks 6:30 PM
+        assertEquals(
+            "meeting @6:30 PM",
+            SpokenDateParser.convert("meeting at 6:30", fixedToday, fixedTimeAt239Pm)
+        )
+
+        // Bare "by 5" at 4:00 AM -> 5:00 AM is still upcoming -> picks 5:00 AM
+        val earlyMorningTime = LocalTime.of(4, 0)
+        assertEquals(
+            "@5:00 AM",
+            SpokenDateParser.convert("by 5", fixedToday, earlyMorningTime)
+        )
+
+        // "subah by 5" at 2:39 PM -> explicit morning -> picks 5:00 AM
+        assertEquals(
+            "@5:00 AM",
+            SpokenDateParser.convert("subah by 5", fixedToday, fixedTimeAt239Pm)
+        )
+
+        // Mixed sentence: "Subah call karna hai, meeting at 5" at 2:39 PM -> "meeting at 5" picks 5:00 PM without being poisoned by "Subah"
+        assertEquals(
+            "Subah call karna hai, meeting @5:00 PM",
+            SpokenDateParser.convert("Subah call karna hai, meeting at 5", fixedToday, fixedTimeAt239Pm)
+        )
     }
 }

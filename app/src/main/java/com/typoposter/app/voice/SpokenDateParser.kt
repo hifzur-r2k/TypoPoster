@@ -2,6 +2,7 @@ package com.typoposter.app.voice
 
 import java.time.DayOfWeek
 import java.time.LocalDate
+import java.time.LocalTime
 
 /**
  * 100% offline spoken deadline to countdown tag converter for English, Hindi, and Hinglish.
@@ -25,7 +26,11 @@ object SpokenDateParser {
         RegexOption.IGNORE_CASE
     )
 
-    fun convert(spokenText: String, today: LocalDate = LocalDate.now()): String {
+    fun convert(
+        spokenText: String,
+        today: LocalDate = LocalDate.now(),
+        nowTime: LocalTime = LocalTime.now()
+    ): String {
         if (spokenText.isBlank()) return spokenText
 
         var result = spokenText
@@ -110,6 +115,9 @@ object SpokenDateParser {
 
         // 8. Explicit dates: "30th of November", "30 November", "25th Dec", "25 Dec 2026", "November 30"
         result = replaceExplicitDates(result)
+
+        // 8b. Same-day times: "by 2pm", "by 2:30 pm", "at 5pm", "2 pm", "14:00", "2 baje", "dopahar 2 baje", "2 बजे"
+        result = replaceSpokenTimes(result, nowTime)
 
         // 9. Tomorrow: "tomorrow", "kal", "कल"
         result = result.replace(
@@ -264,7 +272,149 @@ object SpokenDateParser {
             "eight", "aath", "आठ" -> 8
             "nine", "nau", "नौ" -> 9
             "ten", "das", "दस" -> 10
+            "eleven", "gyarah", "ग्यारह" -> 11
+            "twelve", "barah", "बारह" -> 12
             else -> null
+        }
+    }
+
+    private fun replaceSpokenTimes(
+        text: String,
+        nowTime: LocalTime = LocalTime.now()
+    ): String {
+        var res = text
+
+        // 1. Hindi/Hinglish "baje": "2 baje", "dopahar 2 baje", "shaam 5 baje", "दोपहर 2 बजे", "2 बजे"
+        val hindiPeriod = "dopahar|shaam|raat|subah|दोपहर|शाम|रात|सुबह"
+        val hindiNums = "ek|do|teen|char|chaar|paanch|panch|chhe|che|saat|aath|nau|das|gyarah|barah|" +
+                "एक|दो|तीन|चार|पांच|छह|सात|आठ|नौ|दस|ग्यारह|बारह"
+        val regexHindiBaje = boundaryRegex(
+            "(?:($hindiPeriod)\\s+)?(\\d{1,2}|$hindiNums)(?::(\\d{2}))?\\s*(?:baje|बजे)(?:\\s+(?:tak|par|pe|ko|तक|पर|पे|को))?"
+        )
+        res = regexHindiBaje.replace(res) { match ->
+            val period = match.groupValues[1]
+            val numStr = match.groupValues[2]
+            val minStr = match.groupValues.getOrNull(3)?.takeIf { it.isNotBlank() }
+            val rawH = parseWordNumber(numStr) ?: return@replace match.value
+            val m = minStr?.toIntOrNull() ?: 0
+            if (rawH !in 1..24 || m !in 0..59) return@replace match.value
+
+            val (h12, amPm) = resolveHindiPeriod(rawH, period)
+            formatTimeTag(h12, m, amPm)
+        }
+
+        // 2. English: "(by/at)? HH(:MM)? (am/pm)" with dotted and spaced meridiem support
+        // e.g. "by 2pm", "by 2:30 pm", "at 5pm", "2 pm", "at 11:30am", "5 p.m.", "5:00 p.m.", "at 9 a.m."
+        val regexEnglishAmPm = boundaryRegex(
+            "(?:(?:by|at)\\s+)?(\\d{1,2})(?::(\\d{2}))?\\s*(a\\.?\\s*m\\.?|p\\.?\\s*m\\.?)"
+        )
+        res = regexEnglishAmPm.replace(res) { match ->
+            val h = match.groupValues[1].toIntOrNull() ?: return@replace match.value
+            val m = match.groupValues.getOrNull(2)?.takeIf { it.isNotBlank() }?.toIntOrNull() ?: 0
+            val rawAmPm = match.groupValues[3].lowercase()
+            val amPm = if (rawAmPm.contains("p")) "PM" else "AM"
+            if (h !in 1..12 || m !in 0..59) return@replace match.value
+            formatTimeTag(h, m, amPm)
+        }
+
+        val periodPrefix = "(?:(subah|morning|shaam|evening|dopahar|afternoon|raat|night|सुबह|शाम|दोपहर|रात)\\s+)?"
+        val periodSuffix = "(?:\\s+(?:in\\s+the\\s+)?(morning|afternoon|evening|night))?"
+
+        // 3. Time with colon: "14:00", "at 14:00", "at 6:30", "by 5:30" (without AM/PM)
+        val regexColonTime = boundaryRegex(
+            "$periodPrefix(?:(?:by|at)\\s+)?([01]?\\d|2[0-3]):([0-5]\\d)$periodSuffix(?!\\s*(?:a\\.?\\s*m\\.?|p\\.?\\s*m\\.?))"
+        )
+        res = regexColonTime.replace(res) { match ->
+            if (match.value.startsWith("@")) return@replace match.value
+            val prePeriod = match.groupValues[1].takeIf { it.isNotBlank() }
+            val h = match.groupValues[2].toIntOrNull() ?: return@replace match.value
+            val m = match.groupValues[3].toIntOrNull() ?: return@replace match.value
+            val postPeriod = match.groupValues.getOrNull(4)?.takeIf { it.isNotBlank() }
+            val periodWord = prePeriod ?: postPeriod
+
+            val (h12, amPm) = when {
+                h == 0 -> Pair(12, "AM")
+                h > 12 -> Pair(h - 12, "PM")
+                h == 12 -> Pair(12, "PM")
+                else -> {
+                    // h in 1..11: Smart AM/PM inference against current time
+                    val inferred = inferAmPm(h, m, periodWord, nowTime)
+                    Pair(h, inferred)
+                }
+            }
+            formatTimeTag(h12, m, amPm)
+        }
+
+        // 4. Bare 12-hour time: "by 5", "at 5", "at 9", "at 5 in the morning", "by 5 in the evening", "subah by 5"
+        val regexBareTime = boundaryRegex(
+            "$periodPrefix(?:by|at)\\s+(\\d{1,2})(?:\\s*o'?clock)?$periodSuffix(?!(?:\\s*\\d|\\s*(?:a\\.?\\s*m\\.?|p\\.?\\s*m\\.?)))"
+        )
+        res = regexBareTime.replace(res) { match ->
+            if (match.value.startsWith("@")) return@replace match.value
+            val prePeriod = match.groupValues[1].takeIf { it.isNotBlank() }
+            val h = match.groupValues[2].toIntOrNull() ?: return@replace match.value
+            val postPeriod = match.groupValues.getOrNull(3)?.takeIf { it.isNotBlank() }
+            val periodWord = prePeriod ?: postPeriod
+            if (h !in 1..12) return@replace match.value
+
+            val amPm = inferAmPm(h, 0, periodWord, nowTime)
+            formatTimeTag(h, 0, amPm)
+        }
+
+        return res
+    }
+
+    private fun inferAmPm(
+        h12: Int,
+        m: Int,
+        periodWord: String?,
+        nowTime: LocalTime
+    ): String {
+        val pw = periodWord?.trim()?.lowercase() ?: ""
+
+        val isMorning = pw in listOf("morning", "subah", "सुबह")
+        val isEvening = pw in listOf("afternoon", "evening", "night", "shaam", "dopahar", "raat", "शाम", "दोपहर", "रात")
+
+        if (isMorning) return "AM"
+        if (isEvening) return "PM"
+
+        if (h12 == 12) {
+            return "PM" // Default 12:00 to noon PM
+        }
+
+        val amTime = LocalTime.of(h12, m)
+        val pmTime = LocalTime.of(h12 + 12, m)
+
+        return if (nowTime.isAfter(amTime) && !nowTime.isAfter(pmTime)) {
+            "PM"
+        } else {
+            "AM"
+        }
+    }
+
+    private fun formatTimeTag(h12: Int, m: Int, amPm: String): String {
+        val minStr = if (m < 10) "0$m" else "$m"
+        return "@$h12:$minStr $amPm"
+    }
+
+    private fun resolveHindiPeriod(rawH: Int, period: String): Pair<Int, String> {
+        val p = period.trim().lowercase()
+        return when {
+            p in listOf("dopahar", "दोपहर") -> {
+                Pair(rawH, "PM")
+            }
+            p in listOf("shaam", "शाम") -> {
+                Pair(rawH, "PM")
+            }
+            p in listOf("raat", "रात") -> {
+                if (rawH == 12 || rawH in 1..4) Pair(rawH, "AM") else Pair(rawH, "PM")
+            }
+            p in listOf("subah", "सुबह") -> {
+                Pair(rawH, "AM")
+            }
+            else -> {
+                if (rawH in 1..6 || rawH == 12) Pair(rawH, "PM") else Pair(rawH, "AM")
+            }
         }
     }
 

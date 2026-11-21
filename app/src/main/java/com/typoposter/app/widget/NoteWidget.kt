@@ -30,6 +30,7 @@ import com.typoposter.app.R
 import com.typoposter.app.data.Note
 import com.typoposter.app.data.NoteStore
 import com.typoposter.app.date.CountdownHelper
+import com.typoposter.app.date.UrgencyTier
 import com.typoposter.app.theme.TextFormatHelper
 import com.typoposter.app.theme.ThemeEngine
 import com.typoposter.app.ui.VoiceOverlayActivity
@@ -265,24 +266,43 @@ private fun NoteWidgetContent(
                 // Offline Live Countdown Badge (Strict privacy: never for locked notes)
                 val countdown = if (!isLocked) CountdownHelper.findNearest(noteText) else null
                 if (countdown != null) {
+                    val tier = countdown.urgencyTier
+                    val bg = when (tier) {
+                        UrgencyTier.IMMINENT -> theme.accent.copy(alpha = 0.32f)
+                        UrgencyTier.APPROACHING -> theme.accent.copy(alpha = 0.18f)
+                        UrgencyTier.CALM -> theme.surfaceVariant.copy(alpha = 0.8f)
+                    }
+                    val hPad = when (tier) {
+                        UrgencyTier.IMMINENT -> 7.dp
+                        UrgencyTier.APPROACHING -> 6.dp
+                        UrgencyTier.CALM -> 5.dp
+                    }
+                    val vPad = when (tier) {
+                        UrgencyTier.IMMINENT -> 2.5.dp
+                        UrgencyTier.APPROACHING -> 2.dp
+                        UrgencyTier.CALM -> 1.5.dp
+                    }
+                    val fSize = when (tier) {
+                        UrgencyTier.IMMINENT -> 10.sp
+                        UrgencyTier.APPROACHING -> 9.sp
+                        UrgencyTier.CALM -> 8.5.sp
+                    }
+                    val fColor = when (tier) {
+                        UrgencyTier.IMMINENT, UrgencyTier.APPROACHING -> theme.accent
+                        UrgencyTier.CALM -> theme.textSecondary
+                    }
                     Spacer(modifier = GlanceModifier.width(8.dp))
                     Box(
                         modifier = GlanceModifier
-                            .background(
-                                if (countdown.isToday) theme.accent.copy(alpha = 0.28f)
-                                else theme.surfaceVariant.copy(alpha = 0.8f)
-                            )
+                            .background(bg)
                             .cornerRadius(4.dp)
-                            .padding(horizontal = 6.dp, vertical = 2.dp),
+                            .padding(horizontal = hPad, vertical = vPad),
                     ) {
                         Text(
                             text = countdown.compactLabel.uppercase(),
                             style = TextStyle(
-                                color = ColorProvider(
-                                    if (countdown.isToday) theme.accent
-                                    else theme.textSecondary
-                                ),
-                                fontSize = 9.sp,
+                                color = ColorProvider(fColor),
+                                fontSize = fSize,
                                 fontWeight = FontWeight.Bold,
                             )
                         )

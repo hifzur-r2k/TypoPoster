@@ -3,6 +3,7 @@ package com.typoposter.app.date
 import org.junit.Assert.*
 import org.junit.Test
 import java.time.LocalDate
+import java.time.LocalTime
 
 class CountdownHelperTest {
 
@@ -167,5 +168,165 @@ class CountdownHelperTest {
         val textWithUser = "Hey @john, can you review this?"
         val badgesUser = CountdownHelper.parseAll(textWithUser, fixedToday)
         assertTrue(badgesUser.isEmpty())
+    }
+
+    @Test
+    fun testSameDayTimeParsing12H() {
+        val text = "Submit report @by 2pm and call client @at 11:30am, review @2:00 PM and sync @2:30 pm"
+        val fixedTime = LocalTime.of(12, 6) // 12:06 PM
+
+        val badges = CountdownHelper.parseAll(text, fixedToday, fixedTime)
+        assertEquals(4, badges.size)
+
+        // 1. @by 2pm (target 14:00, 114 mins away)
+        val b1 = badges[0]
+        assertEquals(fixedToday, b1.targetDate)
+        assertEquals(LocalTime.of(14, 0), b1.targetTime)
+        assertEquals(114L, b1.minutesDiff)
+        assertEquals("in 1h 54m", b1.label)
+        assertEquals("1h left", b1.compactLabel)
+        assertFalse(b1.isOverdue)
+        assertTrue(b1.isToday)
+        assertEquals(UrgencyTier.IMMINENT, b1.urgencyTier)
+
+        // 2. @at 11:30am (target 11:30, 36 mins in past)
+        val b2 = badges[1]
+        assertEquals(fixedToday, b2.targetDate)
+        assertEquals(LocalTime.of(11, 30), b2.targetTime)
+        assertEquals(-36L, b2.minutesDiff)
+        assertEquals("11:30 AM • past", b2.label)
+        assertEquals("Due 11:30 AM", b2.compactLabel)
+        assertTrue(b2.isOverdue)
+        assertTrue(b2.isToday)
+        assertEquals(UrgencyTier.IMMINENT, b2.urgencyTier)
+
+        // 3. @2:00 PM (target 14:00, 114 mins away)
+        val b3 = badges[2]
+        assertEquals(LocalTime.of(14, 0), b3.targetTime)
+        assertEquals("in 1h 54m", b3.label)
+        assertEquals("1h left", b3.compactLabel)
+        assertEquals(UrgencyTier.IMMINENT, b3.urgencyTier)
+
+        // 4. @2:30 pm (target 14:30, 144 mins away -> > 120 mins)
+        val b4 = badges[3]
+        assertEquals(LocalTime.of(14, 30), b4.targetTime)
+        assertEquals(144L, b4.minutesDiff)
+        assertEquals("in 2h 24m", b4.label)
+        assertEquals("2h left", b4.compactLabel)
+        assertEquals(UrgencyTier.APPROACHING, b4.urgencyTier)
+    }
+
+    @Test
+    fun testSameDayTimeParsing24HAndBaje() {
+        val text = "Lunch @14:00 and meeting @2 baje and dinner @shaam 5 baje and review @dopahar 2 baje"
+        val fixedTime = LocalTime.of(12, 6) // 12:06 PM
+
+        val badges = CountdownHelper.parseAll(text, fixedToday, fixedTime)
+        assertEquals(4, badges.size)
+
+        // @14:00
+        assertEquals(LocalTime.of(14, 0), badges[0].targetTime)
+        assertEquals("in 1h 54m", badges[0].label)
+        assertEquals("1h left", badges[0].compactLabel)
+        assertEquals(UrgencyTier.IMMINENT, badges[0].urgencyTier)
+
+        // @2 baje -> 14:00
+        assertEquals(LocalTime.of(14, 0), badges[1].targetTime)
+        assertEquals("in 1h 54m", badges[1].label)
+        assertEquals(UrgencyTier.IMMINENT, badges[1].urgencyTier)
+
+        // @shaam 5 baje -> 17:00 (294 mins away -> > 120 mins)
+        assertEquals(LocalTime.of(17, 0), badges[2].targetTime)
+        assertEquals(294L, badges[2].minutesDiff)
+        assertEquals("in 4h 54m", badges[2].label)
+        assertEquals("4h left", badges[2].compactLabel)
+        assertEquals(UrgencyTier.APPROACHING, badges[2].urgencyTier)
+
+        // @dopahar 2 baje -> 14:00
+        assertEquals(LocalTime.of(14, 0), badges[3].targetTime)
+        assertEquals("in 1h 54m", badges[3].label)
+        assertEquals(UrgencyTier.IMMINENT, badges[3].urgencyTier)
+    }
+
+    @Test
+    fun testUrgencyTierProgression() {
+        val fixedTime = LocalTime.of(12, 0) // 12:00 PM
+
+        // 1. IMMINENT:
+        // - Same-day time within 2 hours (@1:30 PM = 90 mins away)
+        val imminentBadge = CountdownHelper.parseAll("@1:30 PM", fixedToday, fixedTime).first()
+        assertEquals(UrgencyTier.IMMINENT, imminentBadge.urgencyTier)
+
+        // - Same-day time overdue (@11:00 AM = -60 mins)
+        val overdueBadge = CountdownHelper.parseAll("@11:00 AM", fixedToday, fixedTime).first()
+        assertEquals(UrgencyTier.IMMINENT, overdueBadge.urgencyTier)
+
+        // - Date due today (@today)
+        val todayBadge = CountdownHelper.parseAll("@today", fixedToday, fixedTime).first()
+        assertEquals(UrgencyTier.IMMINENT, todayBadge.urgencyTier)
+
+        // 2. APPROACHING:
+        // - Tomorrow (@tomorrow)
+        val tomorrowBadge = CountdownHelper.parseAll("@tomorrow", fixedToday, fixedTime).first()
+        assertEquals(UrgencyTier.APPROACHING, tomorrowBadge.urgencyTier)
+
+        // - Same-day time > 2 hours away (@5:00 PM = 5 hours away)
+        val approachingTimeBadge = CountdownHelper.parseAll("@5:00 PM", fixedToday, fixedTime).first()
+        assertEquals(UrgencyTier.APPROACHING, approachingTimeBadge.urgencyTier)
+
+        // 3. CALM:
+        // - Future date > 1 day away (@30 Nov)
+        val calmBadge = CountdownHelper.parseAll("@30 Nov", fixedToday, fixedTime).first()
+        assertEquals(UrgencyTier.CALM, calmBadge.urgencyTier)
+
+        // - Historical multi-day overdue (@yesterday)
+        val yesterdayBadge = CountdownHelper.parseAll("@yesterday", fixedToday, fixedTime).first()
+        assertEquals(UrgencyTier.CALM, yesterdayBadge.urgencyTier)
+    }
+
+    @Test
+    fun testNearestCountdownWithSameDayTimes() {
+        val text = "Sprint demo @tomorrow and sync @2:00 PM and team check @5:00 PM"
+        val fixedTime = LocalTime.of(12, 6) // 12:06 PM
+
+        val nearest = CountdownHelper.findNearest(text, fixedToday, fixedTime)
+        assertNotNull(nearest)
+        // 2:00 PM is today in 1h 54m, which is nearer than 5:00 PM or tomorrow!
+        assertEquals("@2:00 PM", nearest?.tag)
+        assertEquals("in 1h 54m", nearest?.label)
+        assertEquals(UrgencyTier.IMMINENT, nearest?.urgencyTier)
+    }
+
+    @Test
+    fun testDottedMeridiemAndBareTimeBadges() {
+        val fixedTimeAt239Pm = LocalTime.of(14, 39) // 2:39 PM
+
+        // 1. Dotted meridiem @5 p.m.
+        val badges1 = CountdownHelper.parseAll("Meeting @5 p.m.", fixedToday, fixedTimeAt239Pm)
+        assertEquals(1, badges1.size)
+        assertEquals(LocalTime.of(17, 0), badges1[0].targetTime)
+        assertEquals(141L, badges1[0].minutesDiff)
+        assertEquals("in 2h 21m", badges1[0].label)
+
+        // 2. Dotted meridiem @5:30 p.m.
+        val badges2 = CountdownHelper.parseAll("Call @5:30 p.m.", fixedToday, fixedTimeAt239Pm)
+        assertEquals(1, badges2.size)
+        assertEquals(LocalTime.of(17, 30), badges2[0].targetTime)
+        assertEquals(171L, badges2[0].minutesDiff)
+        assertEquals("in 2h 51m", badges2[0].label)
+
+        // 3. Dotted meridiem @at 9 a.m. (past at 2:39 PM)
+        val badges3 = CountdownHelper.parseAll("Sync @at 9 a.m.", fixedToday, fixedTimeAt239Pm)
+        assertEquals(1, badges3.size)
+        assertEquals(LocalTime.of(9, 0), badges3[0].targetTime)
+        assertTrue(badges3[0].isOverdue)
+        assertEquals("9:00 AM • past", badges3[0].label)
+
+        // 4. Bare @by 5 at 2:39 PM -> Smart inference picks 17:00 (5:00 PM)
+        val badges4 = CountdownHelper.parseAll("Finish @by 5", fixedToday, fixedTimeAt239Pm)
+        assertEquals(1, badges4.size)
+        assertEquals(LocalTime.of(17, 0), badges4[0].targetTime)
+        assertEquals(141L, badges4[0].minutesDiff)
+        assertEquals("in 2h 21m", badges4[0].label)
     }
 }

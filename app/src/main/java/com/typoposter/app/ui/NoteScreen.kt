@@ -56,6 +56,7 @@ import com.typoposter.app.calc.SmartCalculatorHelper
 import com.typoposter.app.data.Note
 import com.typoposter.app.date.CountdownBadge
 import com.typoposter.app.date.CountdownHelper
+import com.typoposter.app.date.UrgencyTier
 import com.typoposter.app.theme.FormatType
 import com.typoposter.app.theme.PosterTheme
 import com.typoposter.app.theme.RichTextVisualTransformation
@@ -132,7 +133,8 @@ fun NoteScreen(
                 val spoken = matches?.firstOrNull() ?: ""
                 if (spoken.isNotBlank()) {
                     val converted = com.typoposter.app.voice.SpokenDateParser.convert(spoken)
-                    val updated = insertSpeechText(textFieldValue, converted)
+                    val mathParsed = com.typoposter.app.voice.SpokenMathParser.parse(converted)
+                    val updated = insertSpeechText(textFieldValue, mathParsed)
                     textFieldValue = updated
                     lastEmittedText = updated.text
                     onTextChanged(updated.text)
@@ -454,20 +456,47 @@ fun NoteScreen(
                             if (!note.isLocked) {
                                 val nearest = remember(note.content) { CountdownHelper.findNearest(note.content) }
                                 if (nearest != null) {
+                                    val tier = nearest.urgencyTier
+                                    val bg = when (tier) {
+                                        UrgencyTier.IMMINENT -> accentColor.value.copy(alpha = 0.28f)
+                                        UrgencyTier.APPROACHING -> accentColor.value.copy(alpha = 0.16f)
+                                        UrgencyTier.CALM -> theme.surfaceVariant.copy(alpha = 0.8f)
+                                    }
+                                    val hPad = when (tier) {
+                                        UrgencyTier.IMMINENT -> 6.dp
+                                        UrgencyTier.APPROACHING -> 5.5.dp
+                                        UrgencyTier.CALM -> 5.dp
+                                    }
+                                    val vPad = when (tier) {
+                                        UrgencyTier.IMMINENT -> 2.dp
+                                        UrgencyTier.APPROACHING -> 1.5.dp
+                                        UrgencyTier.CALM -> 1.5.dp
+                                    }
+                                    val fSize = when (tier) {
+                                        UrgencyTier.IMMINENT -> 9.5.sp
+                                        UrgencyTier.APPROACHING -> 9.sp
+                                        UrgencyTier.CALM -> 8.5.sp
+                                    }
+                                    val fWeight = when (tier) {
+                                        UrgencyTier.IMMINENT -> FontWeight.SemiBold
+                                        UrgencyTier.APPROACHING -> FontWeight.Medium
+                                        UrgencyTier.CALM -> FontWeight.Normal
+                                    }
+                                    val fColor = when (tier) {
+                                        UrgencyTier.IMMINENT, UrgencyTier.APPROACHING -> accentColor.value
+                                        UrgencyTier.CALM -> secondaryColor.value
+                                    }
                                     Box(
                                         modifier = Modifier
                                             .clip(RoundedCornerShape(8.dp))
-                                            .background(
-                                                if (nearest.isToday) accentColor.value.copy(alpha = 0.25f)
-                                                else theme.surfaceVariant.copy(alpha = 0.8f)
-                                            )
-                                            .padding(horizontal = 5.dp, vertical = 1.5.dp)
+                                            .background(bg)
+                                            .padding(horizontal = hPad, vertical = vPad)
                                     ) {
                                         Text(
                                             text = nearest.compactLabel,
-                                            color = if (nearest.isToday) accentColor.value else secondaryColor.value,
-                                            fontSize = 9.sp,
-                                            fontWeight = FontWeight.Medium,
+                                            color = fColor,
+                                            fontSize = fSize,
+                                            fontWeight = fWeight,
                                         )
                                     }
                                 }
@@ -1230,45 +1259,74 @@ private fun CountdownPill(
     accentColor: Color,
     textColor: Color,
 ) {
-    val pillBg = if (badge.isToday) {
-        accentColor.copy(alpha = 0.22f)
-    } else {
-        theme.surfaceVariant.copy(alpha = 0.85f)
+    val tier = badge.urgencyTier
+    val pillBg = when (tier) {
+        UrgencyTier.IMMINENT -> accentColor.copy(alpha = 0.26f)
+        UrgencyTier.APPROACHING -> accentColor.copy(alpha = 0.16f)
+        UrgencyTier.CALM -> theme.surfaceVariant.copy(alpha = 0.85f)
     }
-    val pillBorder = if (badge.isToday) {
-        accentColor.copy(alpha = 0.6f)
-    } else {
-        theme.textSecondary.copy(alpha = 0.25f)
+    val pillBorder = when (tier) {
+        UrgencyTier.IMMINENT -> accentColor.copy(alpha = 0.70f)
+        UrgencyTier.APPROACHING -> accentColor.copy(alpha = 0.45f)
+        UrgencyTier.CALM -> theme.textSecondary.copy(alpha = 0.22f)
     }
-    val dotColor = if (badge.isToday) {
-        accentColor
-    } else if (badge.isOverdue) {
-        theme.textSecondary.copy(alpha = 0.5f)
-    } else {
-        accentColor
+    val borderWidth = when (tier) {
+        UrgencyTier.IMMINENT -> 1.2.dp
+        UrgencyTier.APPROACHING -> 0.9.dp
+        UrgencyTier.CALM -> 0.7.dp
+    }
+    val dotColor = when (tier) {
+        UrgencyTier.IMMINENT -> accentColor
+        UrgencyTier.APPROACHING -> accentColor
+        UrgencyTier.CALM -> if (badge.isOverdue) theme.textSecondary.copy(alpha = 0.5f) else accentColor.copy(alpha = 0.7f)
+    }
+    val dotSize = when (tier) {
+        UrgencyTier.IMMINENT -> 7.dp
+        UrgencyTier.APPROACHING -> 6.dp
+        UrgencyTier.CALM -> 5.dp
+    }
+    val hPadding = when (tier) {
+        UrgencyTier.IMMINENT -> 12.dp
+        UrgencyTier.APPROACHING -> 10.dp
+        UrgencyTier.CALM -> 8.dp
+    }
+    val vPadding = when (tier) {
+        UrgencyTier.IMMINENT -> 5.dp
+        UrgencyTier.APPROACHING -> 4.dp
+        UrgencyTier.CALM -> 3.5.dp
+    }
+    val fontSize = when (tier) {
+        UrgencyTier.IMMINENT -> 11.5.sp
+        UrgencyTier.APPROACHING -> 11.sp
+        UrgencyTier.CALM -> 10.5.sp
+    }
+    val fontWeight = when (tier) {
+        UrgencyTier.IMMINENT -> FontWeight.SemiBold
+        UrgencyTier.APPROACHING -> FontWeight.Medium
+        UrgencyTier.CALM -> FontWeight.Normal
     }
 
     Row(
         modifier = Modifier
             .clip(RoundedCornerShape(16.dp))
             .background(pillBg)
-            .border(0.8.dp, pillBorder, RoundedCornerShape(16.dp))
-            .padding(horizontal = 10.dp, vertical = 4.dp),
+            .border(borderWidth, pillBorder, RoundedCornerShape(16.dp))
+            .padding(horizontal = hPadding, vertical = vPadding),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         Box(
             modifier = Modifier
-                .size(6.dp)
+                .size(dotSize)
                 .clip(CircleShape)
                 .background(dotColor)
         )
         Text(
             text = "${badge.tag.removePrefix("@")}: ${badge.label}",
             color = textColor,
-            fontSize = 11.sp,
+            fontSize = fontSize,
             fontFamily = theme.bodyFont,
-            fontWeight = if (badge.isToday) FontWeight.SemiBold else FontWeight.Normal,
+            fontWeight = fontWeight,
             letterSpacing = 0.3.sp,
         )
     }

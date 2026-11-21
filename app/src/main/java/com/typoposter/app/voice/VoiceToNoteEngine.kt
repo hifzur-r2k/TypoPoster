@@ -3,6 +3,8 @@ package com.typoposter.app.voice
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -23,16 +25,17 @@ import java.io.File
 
 /**
  * Supported speech recognition languages.
- * - EN: "en-US" with offline preference (100% offline via downloaded English US pack)
- * - HI: "hi-IN" with offline preference disabled (runs smoothly online/hybrid without requiring offline Hindi pack)
+ * - EN: "en-IN" (English India) with full proper-noun cloud vocabulary when online,
+ *   and offline pack when offline (with automatic en-US fallback).
+ * - HI: "hi-IN" (Hindi India) running online for high-accuracy Hinglish & Hindi.
  */
 enum class VoiceLanguage(
     val tag: String,
     val displayName: String,
     val shortLabel: String,
-    val isOfflinePreferred: Boolean = true
+    val isOfflinePreferred: Boolean = false
 ) {
-    ENGLISH("en-US", "English (US)", "EN", isOfflinePreferred = true),
+    ENGLISH("en-IN", "English (India)", "EN", isOfflinePreferred = false),
     HINDI("hi-IN", "हिंदी (India)", "HI", isOfflinePreferred = false)
 }
 
@@ -78,6 +81,7 @@ data class RecognizerResult(
 object VoiceToNoteEngine {
 
     private const val TAG = "VoiceToNoteEngine"
+    private val mainHandler: Handler by lazy { Handler(Looper.getMainLooper()) }
     private var activeRecognizer: SpeechRecognizer? = null
     private var stateListener: ((SpeechState) -> Unit)? = null
     private var lastPartialText: String = ""
@@ -85,15 +89,8 @@ object VoiceToNoteEngine {
     private val _rmsFlow = MutableStateFlow(0f)
     val rmsFlow: StateFlow<Float> = _rmsFlow.asStateFlow()
 
-    fun logDiagnostic(context: Context, msg: String) {
+    fun logDiagnostic(@Suppress("UNUSED_PARAMETER") context: Context, msg: String) {
         Log.i(TAG, msg)
-        try {
-            val dir = context.getExternalFilesDir(null) ?: context.filesDir
-            File(dir, "typoposter_voice_diag.txt").appendText("[${System.currentTimeMillis()}] $msg\n")
-            try {
-                File("/sdcard/Download/typoposter_voice_diag.txt").appendText("[${System.currentTimeMillis()}] $msg\n")
-            } catch (_: Throwable) {}
-        } catch (_: Throwable) {}
     }
 
     /**
@@ -131,8 +128,8 @@ object VoiceToNoteEngine {
             val services = pm.queryIntentServices(intent, 0)
             logDiagnostic(context, "queryIntentServices found ${services.size} service(s) for $language")
 
-            val preferred = services.firstOrNull { it.serviceInfo?.packageName == "com.google.android.tts" }
-                ?: services.firstOrNull { it.serviceInfo?.packageName == "com.google.android.googlequicksearchbox" }
+            val preferred = services.firstOrNull { it.serviceInfo?.packageName == "com.google.android.googlequicksearchbox" }
+                ?: services.firstOrNull { it.serviceInfo?.packageName == "com.google.android.tts" }
                 ?: services.firstOrNull { it.serviceInfo?.packageName?.contains("google", ignoreCase = true) == true }
                 ?: services.firstOrNull()
 
@@ -158,9 +155,17 @@ object VoiceToNoteEngine {
         val appContext = context.applicationContext ?: context
         if (findRecognitionServiceComponent(context) != null) return true
         if (hasGoogleSpeechEngine(context)) return true
-        return try {
+        if (try {
             SpeechRecognizer.isRecognitionAvailable(context) ||
                     SpeechRecognizer.isRecognitionAvailable(appContext)
+        } catch (_: Throwable) {
+            false
+        }) return true
+
+        return try {
+            val pm = context.packageManager
+            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
+            pm.queryIntentActivities(intent, 0).isNotEmpty()
         } catch (_: Throwable) {
             false
         }
@@ -169,11 +174,32 @@ object VoiceToNoteEngine {
     /**
      * Creates a SpeechRecognizer explicitly bound to the preferred RecognitionService ComponentName,
      * or falls back to default createSpeechRecognizer.
+     * When preferDefault is true (e.g. after Error 5), uses the device's system-default engine directly.
      */
-    fun createRecognizer(context: Context, language: VoiceLanguage = VoiceLanguage.ENGLISH): SpeechRecognizer? {
+    fun createRecognizer(
+        context: Context,
+        language: VoiceLanguage = VoiceLanguage.ENGLISH,
+        preferDefault: Boolean = false
+    ): SpeechRecognizer? {
         val appContext = context.applicationContext ?: context
+
+        // 1. If preferDefault is requested (e.g. on auto-retry after Error 5), bind directly to system default
+        if (preferDefault) {
+            try {
+                val recognizer = SpeechRecognizer.createSpeechRecognizer(context)
+                    ?: SpeechRecognizer.createSpeechRecognizer(appContext)
+                if (recognizer != null) {
+                    logDiagnostic(context, "Created default system SpeechRecognizer (preferDefault=true)")
+                    return recognizer
+                }
+            } catch (t: Throwable) {
+                logDiagnostic(context, "preferDefault createSpeechRecognizer failed: ${t.message}")
+            }
+        }
+
+        // 2. Try explicit ComponentName
         val component = findRecognitionServiceComponent(context, language)
-        if (component != null) {
+        if (component != null && !preferDefault) {
             try {
                 val recognizer = SpeechRecognizer.createSpeechRecognizer(context, component)
                     ?: SpeechRecognizer.createSpeechRecognizer(appContext, component)
@@ -186,7 +212,7 @@ object VoiceToNoteEngine {
             }
         }
 
-        // Fallback if component lookup returned null or threw
+        // 3. Fallback to default SpeechRecognizer
         try {
             val defaultRecognizer = SpeechRecognizer.createSpeechRecognizer(context)
                 ?: SpeechRecognizer.createSpeechRecognizer(appContext)
@@ -210,10 +236,25 @@ object VoiceToNoteEngine {
     }
 
     /**
+     * Checks if internet connectivity is active on this device.
+     */
+    fun isNetworkAvailable(context: Context): Boolean {
+        return try {
+            val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            val network = cm?.activeNetwork ?: return false
+            val caps = cm.getNetworkCapabilities(network) ?: return false
+            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    /**
      * Starts listening for spoken input using hybrid language settings:
-     * - EN: "en-US" with EXTRA_PREFER_OFFLINE = true
-     * - HI: "hi-IN" with EXTRA_PREFER_OFFLINE = false (smooth online transcription without offline pack)
-     * - Extended silence delay times to avoid premature cut-off.
+     * - EN: "en-IN" with cloud recognition when online (for Indian proper nouns & places),
+     *   and automatic offline pack fallback when offline.
+     * - HI: "hi-IN" with online recognition.
+     * - Silent continuous dictation restart on timeout (6) and no-match (7).
      */
     fun startListening(
         context: Context,
@@ -229,7 +270,8 @@ object VoiceToNoteEngine {
         language: VoiceLanguage,
         onTier3Fallback: (() -> Unit)?,
         isRetry: Boolean,
-        onStateChange: (SpeechState) -> Unit
+        onStateChange: (SpeechState) -> Unit,
+        useOfflineFallbackUs: Boolean = false
     ) {
         stateListener = onStateChange
 
@@ -238,7 +280,7 @@ object VoiceToNoteEngine {
                 safeCancel()
                 lastPartialText = ""
 
-                val recognizer = createRecognizer(context, language)
+                val recognizer = createRecognizer(context, language, preferDefault = isRetry)
                 if (recognizer == null) {
                     logDiagnostic(context, "Recognizer is null, invoking fallback")
                     if (onTier3Fallback != null) {
@@ -256,9 +298,11 @@ object VoiceToNoteEngine {
                 }
                 activeRecognizer = recognizer
 
+                val isOnline = isNetworkAvailable(context)
+
                 recognizer.setRecognitionListener(object : RecognitionListener {
                     override fun onReadyForSpeech(params: Bundle?) {
-                        logDiagnostic(context, "onReadyForSpeech ($language, isRetry=$isRetry)")
+                        logDiagnostic(context, "onReadyForSpeech ($language, isRetry=$isRetry, online=$isOnline, usFallback=$useOfflineFallbackUs)")
                         onStateChange(SpeechState.Listening(language))
                     }
 
@@ -277,28 +321,72 @@ object VoiceToNoteEngine {
                     }
 
                     override fun onError(error: Int) {
-                        logDiagnostic(context, "onError code: $error ($language, isRetry=$isRetry)")
+                        logDiagnostic(context, "onError code: $error ($language, isRetry=$isRetry, online=$isOnline)")
 
-                        // 1-time silent auto-retry (after 350ms recreate) specifically for
-                        // ERROR_SERVER_DISCONNECTED (11) and ERROR_RECOGNIZER_BUSY (8)
-                        if (!isRetry && (error == SpeechRecognizer.ERROR_SERVER_DISCONNECTED || error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY)) {
-                            logDiagnostic(context, "Silent auto-retry triggered for error $error in 350ms...")
+                        // 1. Uninterrupted continuous dictation: if no-match (7) or speech timeout (6) occurs
+                        // during active speaking/listening, silently commit any captured partial text and release recognizer.
+                        // VoiceOverlayActivity owns the continuous restart loop (with single 200ms debounce).
+                        if (error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT) {
+                            val raw = lastPartialText
+                            lastPartialText = ""
+                            if (raw.isNotBlank()) {
+                                val converted = SpokenDateParser.convert(raw)
+                                val mathParsed = SpokenMathParser.parse(converted)
+                                onStateChange(SpeechState.FinalResult(convertedText = mathParsed, rawText = raw))
+                            } else {
+                                // Emit empty FinalResult so VoiceOverlayActivity seamlessly re-arms mic
+                                onStateChange(SpeechState.FinalResult("", ""))
+                            }
+                            logDiagnostic(context, "Continuous dictation: code $error handled, recognizer released")
                             safeCancel()
-                            Handler(Looper.getMainLooper()).postDelayed({
-                                startListeningInternal(context, language, onTier3Fallback, isRetry = true, onStateChange = onStateChange)
-                            }, 350L)
                             return
                         }
 
-                        // If we already have partial text and received a speech timeout/no match error,
-                        // commit the partial text instead of showing a failure
-                        if ((error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT)
-                            && lastPartialText.isNotBlank()) {
-                            val raw = lastPartialText
-                            lastPartialText = ""
-                            val converted = SpokenDateParser.convert(raw)
-                            onStateChange(SpeechState.FinalResult(convertedText = converted, rawText = raw))
-                            Handler(Looper.getMainLooper()).post { safeCancel() }
+                        // 2. Offline en-IN fallback to en-US if en-IN offline pack is not installed/fails
+                        if (language == VoiceLanguage.ENGLISH && !isOnline && !useOfflineFallbackUs &&
+                            (error == SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE ||
+                             error == SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED ||
+                             error == SpeechRecognizer.ERROR_CLIENT)) {
+                            logDiagnostic(context, "en-IN offline error ($error); falling back to en-US offline...")
+                            safeCancel()
+                            mainHandler.postDelayed({
+                                startListeningInternal(
+                                    context = context,
+                                    language = language,
+                                    onTier3Fallback = onTier3Fallback,
+                                    isRetry = false,
+                                    onStateChange = onStateChange,
+                                    useOfflineFallbackUs = true
+                                )
+                            }, 200L)
+                            return
+                        }
+
+                        // 3. 1-time silent auto-retry (after 250ms recreate with preferDefault=true) specifically for
+                        // ERROR_CLIENT (5), ERROR_SERVER_DISCONNECTED (11), and ERROR_RECOGNIZER_BUSY (8)
+                        if (!isRetry && (error == SpeechRecognizer.ERROR_CLIENT ||
+                                error == SpeechRecognizer.ERROR_SERVER_DISCONNECTED ||
+                                error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY)) {
+                            logDiagnostic(context, "Silent auto-retry triggered for error $error in 250ms...")
+                            safeCancel()
+                            mainHandler.postDelayed({
+                                startListeningInternal(
+                                    context = context,
+                                    language = language,
+                                    onTier3Fallback = onTier3Fallback,
+                                    isRetry = true,
+                                    onStateChange = onStateChange,
+                                    useOfflineFallbackUs = useOfflineFallbackUs
+                                )
+                            }, 250L)
+                            return
+                        }
+
+                        // 4. If ERROR_CLIENT (5) persists after retry, automatically invoke Tier 3 fallback (system speech dialog)
+                        if (error == SpeechRecognizer.ERROR_CLIENT && onTier3Fallback != null) {
+                            logDiagnostic(context, "ERROR_CLIENT persisted after retry; invoking onTier3Fallback")
+                            safeCancel()
+                            onTier3Fallback()
                             return
                         }
 
@@ -314,7 +402,7 @@ object VoiceToNoteEngine {
                                         error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY)
                             )
                         )
-                        Handler(Looper.getMainLooper()).post {
+                        mainHandler.post {
                             safeCancel()
                         }
                     }
@@ -326,11 +414,13 @@ object VoiceToNoteEngine {
                         lastPartialText = ""
                         if (raw.isNotBlank()) {
                             val converted = SpokenDateParser.convert(raw)
-                            onStateChange(SpeechState.FinalResult(convertedText = converted, rawText = raw))
+                            val mathParsed = SpokenMathParser.parse(converted)
+                            onStateChange(SpeechState.FinalResult(convertedText = mathParsed, rawText = raw))
                         } else {
-                            onStateChange(SpeechState.Idle)
+                            // Emit empty FinalResult instead of Idle so VoiceOverlayActivity re-arms mic
+                            onStateChange(SpeechState.FinalResult("", ""))
                         }
-                        Handler(Looper.getMainLooper()).post {
+                        mainHandler.post {
                             safeCancel()
                         }
                     }
@@ -347,48 +437,69 @@ object VoiceToNoteEngine {
                     override fun onEvent(eventType: Int, params: Bundle?) {}
                 })
 
+                val langTag = if (language == VoiceLanguage.ENGLISH) {
+                    if (useOfflineFallbackUs) "en-US" else "en-IN"
+                } else {
+                    language.tag
+                }
+
+                val preferOffline = if (language == VoiceLanguage.ENGLISH) {
+                    if (isOnline) {
+                        // When online, disable EXTRA_PREFER_OFFLINE so en-IN uses full cloud proper-noun vocabulary
+                        false
+                    } else {
+                        // When offline, automatically enable EXTRA_PREFER_OFFLINE = true
+                        !isRetry
+                    }
+                } else {
+                    false
+                }
+
                 val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
                     putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                    putExtra(RecognizerIntent.EXTRA_LANGUAGE, language.tag)
-                    putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, language.tag)
-
-                    // Extended delay and silence timeouts so speech is not cut off prematurely
-                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 6000L)
-                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 4000L)
-                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 3000L)
-
-                    // Hybrid language settings:
-                    // EN runs offline using downloaded English US pack (EXTRA_PREFER_OFFLINE = true)
-                    // HI runs with offline false so it works smoothly over mobile data/Wi-Fi without failing
-                    if (language == VoiceLanguage.ENGLISH) {
-                        putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
-                    } else {
-                        putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, false)
-                        putExtra("android.speech.extra.EXTRA_ADDITIONAL_LANGUAGES", arrayOf("hi-IN", "hi", "en-IN"))
-                    }
+                    putExtra(RecognizerIntent.EXTRA_LANGUAGE, langTag)
+                    putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, langTag)
+                    putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, preferOffline)
                     putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
                     putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
                 }
 
-                logDiagnostic(context, "Calling recognizer.startListening with language ${language.tag} (isRetry=$isRetry)")
+                logDiagnostic(context, "Calling recognizer.startListening with lang=$langTag, preferOffline=$preferOffline, online=$isOnline (isRetry=$isRetry)")
                 recognizer.startListening(intent)
             } catch (t: Throwable) {
                 logDiagnostic(context, "Exception during startListening: ${t.message}\n${Log.getStackTraceString(t)}")
                 safeCancel()
-                onStateChange(
-                    SpeechState.Error(
-                        message = "Voice error: ${t.localizedMessage ?: t.javaClass.simpleName} (Error 5)",
-                        errorCode = SpeechRecognizer.ERROR_CLIENT,
-                        isServiceUnavailable = true
+                if (!isRetry) {
+                    logDiagnostic(context, "Retrying with preferDefault=true after startListening exception")
+                    mainHandler.postDelayed({
+                        startListeningInternal(
+                            context = context,
+                            language = language,
+                            onTier3Fallback = onTier3Fallback,
+                            isRetry = true,
+                            onStateChange = onStateChange,
+                            useOfflineFallbackUs = useOfflineFallbackUs
+                        )
+                    }, 200L)
+                } else if (onTier3Fallback != null) {
+                    logDiagnostic(context, "Invoking onTier3Fallback after startListening exception on retry")
+                    onTier3Fallback()
+                } else {
+                    onStateChange(
+                        SpeechState.Error(
+                            message = "Voice error: ${t.localizedMessage ?: t.javaClass.simpleName} (Error 5)",
+                            errorCode = SpeechRecognizer.ERROR_CLIENT,
+                            isServiceUnavailable = true
+                        )
                     )
-                )
+                }
             }
         }
 
         if (Looper.myLooper() == Looper.getMainLooper()) {
             task.run()
         } else {
-            Handler(Looper.getMainLooper()).post(task)
+            mainHandler.post(task)
         }
     }
 
@@ -413,21 +524,25 @@ object VoiceToNoteEngine {
         } catch (t: Throwable) {
             Log.w(TAG, "Error during stopListening: ${t.message}")
         }
-        Handler(Looper.getMainLooper()).postDelayed({
+        mainHandler.postDelayed({
             if (activeRecognizer != null && lastPartialText.isNotBlank()) {
                 val raw = lastPartialText
                 lastPartialText = ""
                 val converted = SpokenDateParser.convert(raw)
-                stateListener?.invoke(SpeechState.FinalResult(convertedText = converted, rawText = raw))
+                val mathParsed = SpokenMathParser.parse(converted)
+                stateListener?.invoke(SpeechState.FinalResult(convertedText = mathParsed, rawText = raw))
                 safeCancel()
             }
         }, 700L)
     }
 
     /**
-     * Safely cancels and destroys the active recognizer.
+     * Safely cancels and destroys the active recognizer, clearing any pending delayed tasks.
      */
     fun safeCancel() {
+        try {
+            mainHandler.removeCallbacksAndMessages(null)
+        } catch (_: Throwable) {}
         lastPartialText = ""
         _rmsFlow.value = 0f
         val recognizer = activeRecognizer
@@ -446,6 +561,9 @@ object VoiceToNoteEngine {
      * Cancels active recognition and resets to Idle without inserting.
      */
     fun cancelListening() {
+        try {
+            mainHandler.removeCallbacksAndMessages(null)
+        } catch (_: Throwable) {}
         safeCancel()
         stateListener?.invoke(SpeechState.Idle)
     }
