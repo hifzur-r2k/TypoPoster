@@ -21,12 +21,14 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -35,18 +37,24 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Fill
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.scale
+import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -74,33 +82,28 @@ import kotlin.math.sin
 
 /**
  * Lightweight, floating transparent Activity triggered in 1 tap from the Glance home screen widget.
- * Upgraded with an adorable, minimalist, circular floating companion bot "Typo Bot":
- * - Circular Mascot Silhouette: 108dp diameter head with weightless floating bob (+/-3.5dp), soft 3D depth,
- *   radial light catch, 1dp rim highlight, recessed dark-glass face, and delicate circular soundwave ripple rings
- * - Cute Expressive Face: rounded-oval warm glowing eyes, specular sparkle catchlights, soft rosy cheek blush,
- *   and reactive morphing mouth (subtle smile -> talking shape -> neutral "o" -> wavy -> happy grin)
- * - Playful Expressive States:
- *   * Listening Idle: floating bob, randomized 2.5-4.5s blinking + double-blinks, curious eye glances
- *   * Actively Speaking: joyful squash-and-stretch micro-bounce, warmer blush, talking mouth, soundwave ripples
- *   * Mid-Sentence Thinking Pause: adorable 6-degree head tilt with asymmetric curious eyes and neutral "o" mouth
- *   * Switching Language: smooth darting glance with outer rotating swirl pulse
- *   * Paused: bob rests, sleepy downward arcs (◡  ◡)
- *   * Countdown / Save: happy crescent arcs (◠  ◠), bright blush, happy grin, and celebratory 240ms spring hop
- *   * Error State: soft amber tint with empathetic eyebrows and tiny wavy mouth
- * - Clean editorial overlay with single-line micro-copy and tactile controls
+ * Features an adorable, minimalist, circular floating companion bot "Typo Bot":
+ * - Resilient first-time mic permission handling (launches voice recognition immediately upon Allow)
  * - True Continuous Dictation & multi-language preservation (English + Hindi)
+ * - Note title display in the header
+ * - 1-tap Undo for last spoken phrase
+ * - Tap-to-edit inline transcript
+ * - Cached Canvas brushes for 60fps locked rendering
  * - Safe saving (strict biometric lock confidentiality)
  */
 class VoiceOverlayActivity : ComponentActivity() {
 
     private lateinit var store: NoteStore
     private var boundNoteId: String? = null
+    private var hasMicPermission by mutableStateOf(false)
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
         if (!granted) {
             finish()
+        } else {
+            hasMicPermission = true
         }
     }
 
@@ -109,7 +112,8 @@ class VoiceOverlayActivity : ComponentActivity() {
         store = NoteStore(applicationContext)
         boundNoteId = intent.getStringExtra(NoteWidget.PARAM_NOTE_ID.name) ?: intent.getStringExtra("EXTRA_NOTE_ID")
 
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+        hasMicPermission = ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        if (!hasMicPermission) {
             permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
         }
 
@@ -130,6 +134,8 @@ class VoiceOverlayActivity : ComponentActivity() {
             if (isLoaded) {
                 VoiceOverlayScreen(
                     theme = theme,
+                    noteTitle = activeNote?.title,
+                    hasMicPermission = hasMicPermission,
                     onDismiss = {
                         VoiceToNoteEngine.cancelListening()
                         finish()
@@ -197,6 +203,8 @@ class VoiceOverlayActivity : ComponentActivity() {
 @Composable
 private fun VoiceOverlayScreen(
     theme: PosterTheme,
+    noteTitle: String? = null,
+    hasMicPermission: Boolean = true,
     onDismiss: () -> Unit,
     onSaveNote: (String) -> Unit,
 ) {
@@ -207,9 +215,13 @@ private fun VoiceOverlayScreen(
     // Language state
     var language by remember { mutableStateOf(VoiceLanguage.ENGLISH) }
 
-    // Continuous Dictation state: committed text accumulates finalized phrases, livePartialText streams live words
-    var committedText by remember { mutableStateOf("") }
+    // Continuous Dictation state: committed phrases stored as a List for 1-tap Undo
+    var committedPhrases by remember { mutableStateOf(listOf<String>()) }
     var livePartialText by remember { mutableStateOf("") }
+
+    // Inline transcript editing state
+    var isEditingTranscript by remember { mutableStateOf(false) }
+    var editingTextValue by remember { mutableStateOf(TextFieldValue("")) }
 
     // Bot states
     var isListening by remember { mutableStateOf(false) }
@@ -222,28 +234,39 @@ private fun VoiceOverlayScreen(
     var languageSwitchJob by remember { mutableStateOf<Job?>(null) }
     var autoRestartJob by remember { mutableStateOf<Job?>(null) }
 
-    // Full display transcript (committed + live partial)
-    val fullTranscript = remember(committedText, livePartialText) {
-        if (livePartialText.isBlank()) committedText
-        else if (committedText.isBlank()) livePartialText
-        else "$committedText $livePartialText"
+    // Derived committed text from phrase list
+    val committedText = remember(committedPhrases) {
+        committedPhrases.joinToString(" ")
+    }
+
+    // Full display transcript (committed + live partial, or edited text if editing)
+    val fullTranscript = remember(committedText, livePartialText, isEditingTranscript, editingTextValue.text) {
+        if (isEditingTranscript) {
+            editingTextValue.text
+        } else if (livePartialText.isBlank()) {
+            committedText
+        } else if (committedText.isBlank()) {
+            livePartialText
+        } else {
+            "$committedText $livePartialText"
+        }
     }
 
     // Live audio amplitude for voice reactive visuals
     val rmsAmplitude by VoiceToNoteEngine.rmsFlow.collectAsState()
     val animatedRms by animateFloatAsState(
-        targetValue = if (isListening && !isPaused) rmsAmplitude else 0f,
+        targetValue = if (isListening && !isPaused && !isEditingTranscript) rmsAmplitude else 0f,
         animationSpec = spring(dampingRatio = 0.65f, stiffness = Spring.StiffnessLow),
         label = "bot_rms_spring"
     )
 
     // Mid-Sentence Thinking Pause detection (~2.4s of silence while active note has words)
     var isThinkingPause by remember { mutableStateOf(false) }
-    LaunchedEffect(isListening, isPaused, fullTranscript.length, rmsAmplitude) {
-        if (isListening && !isPaused && fullTranscript.isNotBlank()) {
+    LaunchedEffect(isListening, isPaused, isEditingTranscript, fullTranscript.length, rmsAmplitude) {
+        if (isListening && !isPaused && !isEditingTranscript && fullTranscript.isNotBlank()) {
             if (rmsAmplitude < 0.08f) {
                 delay(2400L)
-                if (isActive && isListening && !isPaused && rmsAmplitude < 0.08f) {
+                if (isActive && isListening && !isPaused && !isEditingTranscript && rmsAmplitude < 0.08f) {
                     isThinkingPause = true
                 }
             } else {
@@ -303,7 +326,10 @@ private fun VoiceOverlayScreen(
             if (spoken.isNotBlank()) {
                 val converted = SpokenDateParser.convert(spoken)
                 val mathParsed = SpokenMathParser.parse(converted)
-                committedText = if (committedText.isBlank()) mathParsed else "$committedText $mathParsed"
+                val phrase = mathParsed.trim()
+                if (phrase.isNotBlank()) {
+                    committedPhrases = committedPhrases + phrase
+                }
             }
         }
         isListening = false
@@ -348,20 +374,20 @@ private fun VoiceOverlayScreen(
                             }
                         }
                         is SpeechState.FinalResult -> {
-                            // Append finalized phrase smoothly to committedText with proper spacing
+                            // Append finalized phrase smoothly to committedPhrases list
                             val mathParsed = SpokenMathParser.parse(state.convertedText)
                             val phrase = mathParsed.trim()
                             if (phrase.isNotBlank()) {
-                                committedText = if (committedText.isBlank()) phrase else "$committedText $phrase"
+                                committedPhrases = committedPhrases + phrase
                             }
                             livePartialText = ""
 
                             // Silently restart continuous listening after ~200ms
-                            if (!isPaused) {
+                            if (!isPaused && !isEditingTranscript) {
                                 autoRestartJob?.cancel()
                                 autoRestartJob = coroutineScope.launch {
                                     delay(200L)
-                                    if (!isPaused) {
+                                    if (!isPaused && !isEditingTranscript) {
                                         startRecognition()
                                     }
                                 }
@@ -370,12 +396,12 @@ private fun VoiceOverlayScreen(
                         is SpeechState.Error -> {
                             val code = state.errorCode
                             // Silently restart for timeouts (6) and no-match (7) during continuous dictation
-                            if ((code == SpeechRecognizer.ERROR_SPEECH_TIMEOUT || code == SpeechRecognizer.ERROR_NO_MATCH) && !isPaused) {
+                            if ((code == SpeechRecognizer.ERROR_SPEECH_TIMEOUT || code == SpeechRecognizer.ERROR_NO_MATCH) && !isPaused && !isEditingTranscript) {
                                 livePartialText = ""
                                 autoRestartJob?.cancel()
                                 autoRestartJob = coroutineScope.launch {
                                     delay(200L)
-                                    if (!isPaused) {
+                                    if (!isPaused && !isEditingTranscript) {
                                         startRecognition()
                                     }
                                 }
@@ -396,6 +422,13 @@ private fun VoiceOverlayScreen(
 
     // Toggle Pause/Resume: stops and releases mic immediately when paused, restarts and appends when resumed
     val togglePause: () -> Unit = {
+        if (isEditingTranscript) {
+            // Commit user's inline edits before resuming
+            val edited = editingTextValue.text.trim()
+            committedPhrases = if (edited.isNotBlank()) listOf(edited) else emptyList()
+            livePartialText = ""
+            isEditingTranscript = false
+        }
         if (isPaused) {
             isPaused = false
             errorMessage = null
@@ -408,8 +441,19 @@ private fun VoiceOverlayScreen(
         }
     }
 
-    // Language switch handler:
-    // Destroys active recognizer, preserves committedText, waits ~300ms, then creates fresh recognizer in new language
+    // 1-Tap Undo Last Spoken Phrase
+    val undoLastPhrase: () -> Unit = {
+        if (committedPhrases.isNotEmpty()) {
+            view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+            committedPhrases = committedPhrases.dropLast(1)
+            if (isEditingTranscript) {
+                val updated = committedPhrases.joinToString(" ")
+                editingTextValue = TextFieldValue(updated, selection = TextRange(updated.length))
+            }
+        }
+    }
+
+    // Language switch handler
     val switchLanguage: (VoiceLanguage) -> Unit = { nextLang ->
         if (nextLang != language) {
             language = nextLang
@@ -423,7 +467,7 @@ private fun VoiceOverlayScreen(
             languageSwitchJob?.cancel()
             languageSwitchJob = coroutineScope.launch {
                 delay(300L)
-                if (!isPaused) {
+                if (!isPaused && !isEditingTranscript) {
                     startRecognition()
                 } else {
                     isConnecting = false
@@ -432,15 +476,18 @@ private fun VoiceOverlayScreen(
         }
     }
 
-    // Initial launch: start listening immediately
-    LaunchedEffect(Unit) {
-        startRecognition()
+    // Start recognition automatically once permission is granted (resolves first-time permission freeze)
+    LaunchedEffect(hasMicPermission) {
+        if (hasMicPermission && !isPaused && !isListening) {
+            startRecognition()
+        }
     }
 
-    // Detect countdown deadline tags and trigger snap-in haptic tick + happy eyes
-    val hasDateTag = remember(fullTranscript) {
-        fullTranscript.contains("@")
+    // Detect countdown deadline tags cleanly via CountdownHelper.findNearest() (avoids email @ false triggers)
+    val nearestDeadline = remember(fullTranscript) {
+        CountdownHelper.findNearest(fullTranscript)
     }
+    val hasDateTag = nearestDeadline != null
     var previousHadDateTag by remember { mutableStateOf(false) }
     LaunchedEffect(hasDateTag) {
         if (hasDateTag && !previousHadDateTag) {
@@ -495,14 +542,18 @@ private fun VoiceOverlayScreen(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
-                // ── Top Bar: Subtle NOTE label & Minimal Segmented Toggle (EN | HI) ──
+                // ── Top Bar: Note Title Header & Minimal Segmented Toggle (EN | HI) ──
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // Small muted indicator dot + subtle tracked uppercase NOTE label
+                    // Small muted indicator dot + uppercase Note Title (or "NOTE" fallback)
+                    val headerTitle = remember(noteTitle) {
+                        noteTitle?.trim()?.takeIf { it.isNotBlank() }?.uppercase() ?: "NOTE"
+                    }
                     Row(
+                        modifier = Modifier.weight(1f, fill = false),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
@@ -519,12 +570,14 @@ private fun VoiceOverlayScreen(
                                 .background(dotColor)
                         )
                         Text(
-                            text = "NOTE",
+                            text = headerTitle,
                             fontSize = 11.sp,
                             fontFamily = theme.headerFont,
                             fontWeight = FontWeight.SemiBold,
                             color = theme.textSecondary.copy(alpha = 0.70f),
-                            letterSpacing = 2.sp
+                            letterSpacing = 1.5.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
 
@@ -566,16 +619,38 @@ private fun VoiceOverlayScreen(
                     )
                 }
 
-                // ── Scrollable Editorial Transcript Area (Height Capped) ──
+                // ── Scrollable Editorial Transcript Area (Tap-to-Edit Inline) ──
                 val scrollState = rememberScrollState()
                 LaunchedEffect(fullTranscript) {
                     scrollState.animateScrollTo(scrollState.maxValue)
                 }
+
+                val enterEditMode = {
+                    if (!isEditingTranscript && fullTranscript.isNotBlank()) {
+                        view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                        isPaused = true
+                        isListening = false
+                        autoRestartJob?.cancel()
+                        VoiceToNoteEngine.safeCancel()
+                        editingTextValue = TextFieldValue(
+                            text = fullTranscript,
+                            selection = TextRange(fullTranscript.length)
+                        )
+                        isEditingTranscript = true
+                    }
+                }
+
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
                         .heightIn(min = 52.dp, max = 145.dp)
-                        .verticalScroll(scrollState),
+                        .verticalScroll(scrollState)
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                            enabled = !isEditingTranscript && fullTranscript.isNotBlank(),
+                            onClick = enterEditMode
+                        ),
                     contentAlignment = Alignment.Center
                 ) {
                     if (fullTranscript.isBlank()) {
@@ -595,6 +670,27 @@ private fun VoiceOverlayScreen(
                             fontWeight = FontWeight.Normal,
                             textAlign = TextAlign.Center,
                             letterSpacing = 0.4.sp
+                        )
+                    } else if (isEditingTranscript) {
+                        // Clean, borderless BasicTextField matching exact typography for inline corrections
+                        BasicTextField(
+                            value = editingTextValue,
+                            onValueChange = { newValue ->
+                                editingTextValue = newValue
+                                val trimmed = newValue.text.trim()
+                                committedPhrases = if (trimmed.isBlank()) emptyList() else listOf(trimmed)
+                                livePartialText = ""
+                            },
+                            textStyle = TextStyle(
+                                color = theme.textPrimary,
+                                fontSize = if (editingTextValue.text.length > 100) 15.sp else if (editingTextValue.text.length > 40) 17.sp else 20.sp,
+                                fontFamily = theme.headerFont,
+                                fontWeight = FontWeight.Medium,
+                                textAlign = TextAlign.Center,
+                                lineHeight = if (editingTextValue.text.length > 100) 22.sp else 26.sp
+                            ),
+                            cursorBrush = SolidColor(if (theme.isDark) theme.accent else theme.textPrimary),
+                            modifier = Modifier.fillMaxWidth()
                         )
                     } else {
                         Text(
@@ -620,9 +716,6 @@ private fun VoiceOverlayScreen(
                 }
 
                 // ── Countdown Snap-In Flash Badge ──
-                val nearestDeadline = remember(fullTranscript) {
-                    if (hasDateTag) CountdownHelper.findNearest(fullTranscript) else null
-                }
                 AnimatedVisibility(
                     visible = nearestDeadline != null,
                     enter = scaleIn(spring(dampingRatio = 0.65f)) + fadeIn(),
@@ -711,27 +804,51 @@ private fun VoiceOverlayScreen(
                     )
                 }
 
-                // ── Clean 3-Control Footer: Cancel | Clean Matte Pause/Resume | Confident Save Pill ──
+                // ── Clean Footer: Cancel & ↺ Undo | Clean Matte Pause/Resume | Confident Save Pill ──
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // Left: Understated Cancel Button
-                    TextButton(
-                        onClick = onDismiss,
-                        shape = RoundedCornerShape(12.dp)
+                    // Left: Understated Cancel Button + 1-Tap Undo Last Phrase
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(2.dp)
                     ) {
-                        Text(
-                            text = "Cancel",
-                            color = theme.textSecondary.copy(alpha = 0.70f),
-                            fontSize = 13.sp,
-                            fontFamily = theme.bodyFont,
-                            fontWeight = FontWeight.Medium
-                        )
+                        TextButton(
+                            onClick = onDismiss,
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Text(
+                                text = "Cancel",
+                                color = theme.textSecondary.copy(alpha = 0.70f),
+                                fontSize = 13.sp,
+                                fontFamily = theme.bodyFont,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+
+                        // Subtle, minimal ↺ Undo icon button that removes only the last spoken phrase
+                        AnimatedVisibility(
+                            visible = committedPhrases.isNotEmpty(),
+                            enter = fadeIn() + scaleIn(spring(dampingRatio = 0.7f)),
+                            exit = fadeOut() + scaleOut()
+                        ) {
+                            IconButton(
+                                onClick = undoLastPhrase,
+                                modifier = Modifier.size(34.dp)
+                            ) {
+                                Text(
+                                    text = "↺",
+                                    fontSize = 17.sp,
+                                    color = theme.textSecondary.copy(alpha = 0.75f),
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+                        }
                     }
 
-                    // Center: Clean matte-filled circular Pause / Resume button (no neon ring)
+                    // Center: Clean matte-filled circular Pause / Resume button
                     Box(
                         modifier = Modifier
                             .size(44.dp)
@@ -771,7 +888,7 @@ private fun VoiceOverlayScreen(
                         }
                     }
 
-                    // Right: Confident, High-Contrast Save Pill that activates smoothly once text is present
+                    // Right: Confident, High-Contrast Save Pill
                     val hasText = fullTranscript.isNotBlank()
                     val saveBg by animateColorAsState(
                         targetValue = if (hasText) theme.textPrimary else theme.textPrimary.copy(alpha = 0.07f),
@@ -792,9 +909,9 @@ private fun VoiceOverlayScreen(
                                 view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
                                 showHappyEyes = true
                                 coroutineScope.launch {
-                                    // 220ms celebratory hop before closing cleanly
                                     delay(220L)
-                                    onSaveNote(fullTranscript)
+                                    val textToSave = if (isEditingTranscript) editingTextValue.text.trim() else fullTranscript.trim()
+                                    onSaveNote(textToSave)
                                 }
                             }
                         },
@@ -825,15 +942,11 @@ private fun VoiceOverlayScreen(
 
 /**
  * Adorable, minimalist, circular floating companion bot "Typo Bot" (Compose Canvas):
- * - Circular Mascot Silhouette: ~108dp diameter head with smooth infinite floating bob (+/-3.5dp)
+ * - Circular Mascot Silhouette: ~104dp diameter head with smooth infinite floating bob (+/-3.5dp)
  * - Soft 3D Depth: circular shell with gentle upper-left radial highlight, 1dp translucent rim highlight,
  *   recessed dark-glass face with soft top curved glass sheen
- * - Delicate Soundwave Ripple Rings expanding outside the circular body synced in real time to onRmsChanged()
- * - Cute Expressive Face: rounded-oval warm glowing eyes, specular sparkle catchlights, soft rosy cheek blush,
- *   reactive mouth (subtle smile -> talking shape -> neutral "o" -> wavy -> happy grin)
- * - Micro-behaviors: natural blinks (plus occasional double-blink), micro-saccade glances, 6° thinking pause tilt,
- *   side-to-side scanning with swirl pulse on language switch, sleepy arcs (◡ ◡) when paused, celebratory 240ms hop
- * - 60fps locked Compose performance with zero heap object allocations inside DrawScope
+ * - High Performance: Static brushes (shell gradient, rim highlight, glass sheen, shadow) are cached
+ *   and reused across frames using drawWithCache to lock 60fps with minimal GC churn.
  */
 @Composable
 private fun TypoBotCircularCompanion(
@@ -953,427 +1066,459 @@ private fun TypoBotCircularCompanion(
         label = "left_eye_widen"
     )
 
-    // Pre-allocated reusable paths for 60fps performance (zero allocations inside onDraw)
+    // Static color definitions remembered outside DrawScope
+    val shellColors = remember(theme.isDark) {
+        if (theme.isDark) {
+            listOf(Color(0xFF343840), Color(0xFF22252A), Color(0xFF141618))
+        } else {
+            listOf(Color(0xFFFFFFFF), Color(0xFFF4F0E8), Color(0xFFE2DDD4))
+        }
+    }
+    val rimColors = remember(theme.isDark) {
+        if (theme.isDark) {
+            listOf(Color.White.copy(alpha = 0.22f), Color.White.copy(alpha = 0.05f), Color.Transparent)
+        } else {
+            listOf(Color.White.copy(alpha = 0.85f), Color.White.copy(alpha = 0.30f), Color.Transparent)
+        }
+    }
+    val glassSheenColors = remember {
+        listOf(Color.White.copy(alpha = 0.075f), Color.Transparent)
+    }
+    val shadowColors = remember(theme.isDark) {
+        listOf(Color.Black.copy(alpha = if (theme.isDark) 0.35f else 0.14f), Color.Transparent)
+    }
+    val darkGlassBaseColor = remember(theme.isDark) {
+        if (theme.isDark) Color(0xFF0C0E11) else Color(0xFF1C1E22)
+    }
+    val recessedRimColor = remember(theme.isDark) {
+        (if (theme.isDark) Color.Black else Color(0xFFC4BEB2)).copy(alpha = 0.45f)
+    }
+
+    // Pre-allocated reusable paths for dynamic features
     val leftEyePath = remember { Path() }
     val rightEyePath = remember { Path() }
     val mouthPath = remember { Path() }
-    val sheenPath = remember { Path() }
 
-    Canvas(modifier = modifier.fillMaxSize()) {
-        val w = size.width
-        val h = size.height
+    // Use drawWithCache on Spacer to avoid recreating static Brush and Path objects per frame
+    Spacer(
+        modifier = modifier
+            .fillMaxSize()
+            .drawWithCache {
+                val w = size.width
+                val h = size.height
+                val cx = w / 2f
+                val cy = h / 2f
+                val headR = 52.dp.toPx()
 
-        val cx = w / 2f
-        val cy = h / 2f + animatedBobY.dp.toPx() + celebrationHop.dp.toPx()
-        val headR = 52.dp.toPx() // ~104dp diameter circular mascot head
-
-        // Grounded Drop Shadow under the bot so it feels like a physical minimalist object resting on the card
-        val shadowW = headR * 1.30f
-        val shadowH = 10.dp.toPx()
-        val shadowY = cy + headR * 0.94f
-        drawOval(
-            brush = Brush.radialGradient(
-                colors = listOf(Color.Black.copy(alpha = if (theme.isDark) 0.35f else 0.14f), Color.Transparent),
-                center = Offset(cx, shadowY),
-                radius = shadowW / 2f
-            ),
-            topLeft = Offset(cx - shadowW / 2f, shadowY - shadowH / 2f),
-            size = Size(shadowW, shadowH)
-        )
-
-        // ── A. Delicate Tonal Soundwave Rings (15–25% alpha, expanding smoothly with voice RMS) ──
-        if (!isPaused && !isError && isListening && amplitude > 0.03f) {
-            val waveColor = if (theme.isDark) theme.accent else theme.textPrimary
-            // Ring 1: Real-time RMS expansion ring (delicate hairline, 15-22% max alpha)
-            val r1 = headR + 3.dp.toPx() + (amplitude * 14.dp.toPx())
-            val alpha1 = (amplitude * 0.22f).coerceIn(0f, 0.22f)
-            drawCircle(
-                color = waveColor.copy(alpha = alpha1),
-                radius = r1,
-                center = Offset(cx, cy),
-                style = Stroke(width = 1.dp.toPx())
-            )
-
-            // Ring 2: Harmonic traveling ripple (delicate hairline, 10-16% max alpha)
-            val r2 = headR + 2.dp.toPx() + ripplePhase * (12.dp.toPx() + amplitude * 8.dp.toPx())
-            val alpha2 = ((1f - ripplePhase) * amplitude * 0.16f).coerceIn(0f, 0.16f)
-            if (alpha2 > 0.015f) {
-                drawCircle(
-                    color = waveColor.copy(alpha = alpha2),
-                    radius = r2,
-                    center = Offset(cx, cy),
-                    style = Stroke(width = 0.8.dp.toPx())
+                // Static Grounded Drop Shadow Brush & bounds
+                val shadowW = headR * 1.30f
+                val shadowH = 10.dp.toPx()
+                val shadowY = cy + headR * 0.94f
+                val shadowBrush = Brush.radialGradient(
+                    colors = shadowColors,
+                    center = Offset(cx, shadowY),
+                    radius = shadowW / 2f
                 )
-            }
-        }
 
-        // Language switching outer swirl pulse
-        if (isConnecting) {
-            val swirlR = headR + 3.dp.toPx()
-            val swirlColor = if (theme.isDark) theme.accent else theme.textPrimary
-            drawArc(
-                color = swirlColor.copy(alpha = 0.25f),
-                startAngle = swirlPhase,
-                sweepAngle = 90f,
-                useCenter = false,
-                topLeft = Offset(cx - swirlR, cy - swirlR),
-                size = Size(swirlR * 2f, swirlR * 2f),
-                style = Stroke(width = 1.2.dp.toPx(), cap = StrokeCap.Round)
-            )
-            drawArc(
-                color = swirlColor.copy(alpha = 0.25f),
-                startAngle = swirlPhase + 180f,
-                sweepAngle = 90f,
-                useCenter = false,
-                topLeft = Offset(cx - swirlR, cy - swirlR),
-                size = Size(swirlR * 2f, swirlR * 2f),
-                style = Stroke(width = 1.2.dp.toPx(), cap = StrokeCap.Round)
-            )
-        }
+                // Static Shell Brush
+                val highlightCenter = Offset(cx - headR * 0.28f, cy - headR * 0.32f)
+                val shellBrush = Brush.radialGradient(
+                    colors = shellColors,
+                    center = highlightCenter,
+                    radius = headR * 1.35f
+                )
 
-        // ── B. Soft Multi-Layer Ambient Radial Glow behind the circular bot ──
-        val ambientAlpha = if (isPaused) 0.02f else (0.04f + amplitude * 0.10f).coerceIn(0f, 0.14f)
-        drawCircle(
-            brush = Brush.radialGradient(
-                colors = listOf(eyeColor.copy(alpha = ambientAlpha), Color.Transparent),
-                center = Offset(cx, cy),
-                radius = headR + 20.dp.toPx()
-            ),
-            radius = headR + 20.dp.toPx(),
-            center = Offset(cx, cy)
-        )
+                // Static Rim Brush
+                val rimBrush = Brush.linearGradient(
+                    colors = rimColors,
+                    start = Offset(cx - headR, cy - headR),
+                    end = Offset(cx + headR, cy + headR)
+                )
 
-        // Subtle joyful micro-bounce (squash-and-stretch) while speaking
-        val squashX = 1f + (amplitude * 0.035f)
-        val squashY = 1f - (amplitude * 0.035f)
-
-        withTransform({
-            scale(scaleX = squashX, scaleY = squashY, pivot = Offset(cx, cy))
-        }) {
-            // ── C. Smooth Circular Outer Shell (Tactile Material Depth & Light Catch) ──
-            val shellColors = if (theme.isDark) {
-                listOf(Color(0xFF343840), Color(0xFF22252A), Color(0xFF141618))
-            } else {
-                listOf(Color(0xFFFFFFFF), Color(0xFFF4F0E8), Color(0xFFE2DDD4))
-            }
-            val highlightCenter = Offset(cx - headR * 0.28f, cy - headR * 0.32f)
-            val shellBrush = Brush.radialGradient(
-                colors = shellColors,
-                center = highlightCenter,
-                radius = headR * 1.35f
-            )
-            drawCircle(
-                brush = shellBrush,
-                radius = headR,
-                center = Offset(cx, cy)
-            )
-
-            // Delicate 1dp translucent rim highlight
-            val rimBrush = Brush.linearGradient(
-                colors = if (theme.isDark) {
-                    listOf(Color.White.copy(alpha = 0.22f), Color.White.copy(alpha = 0.05f), Color.Transparent)
-                } else {
-                    listOf(Color.White.copy(alpha = 0.85f), Color.White.copy(alpha = 0.30f), Color.Transparent)
-                },
-                start = Offset(cx - headR, cy - headR),
-                end = Offset(cx + headR, cy + headR)
-            )
-            drawCircle(
-                brush = rimBrush,
-                radius = headR,
-                center = Offset(cx, cy),
-                style = Stroke(width = 1.dp.toPx())
-            )
-
-            // ── D. Sleek Circular Recessed Dark-Glass Face ──
-            val faceR = 45.dp.toPx() // ~90dp inner face diameter
-
-            // Recessed rim shadow
-            drawCircle(
-                color = (if (theme.isDark) Color.Black else Color(0xFFC4BEB2)).copy(alpha = 0.45f),
-                radius = faceR + 1.2.dp.toPx(),
-                center = Offset(cx, cy),
-                style = Stroke(width = 1.6.dp.toPx())
-            )
-            // Dark glass base with deep contrast
-            drawCircle(
-                color = if (theme.isDark) Color(0xFF0C0E11) else Color(0xFF1C1E22),
-                radius = faceR,
-                center = Offset(cx, cy)
-            )
-
-            // Soft curved glass sheen near the top
-            sheenPath.reset()
-            sheenPath.moveTo(cx - 32.dp.toPx(), cy - 20.dp.toPx())
-            sheenPath.quadraticBezierTo(cx, cy - 38.dp.toPx(), cx + 32.dp.toPx(), cy - 20.dp.toPx())
-            sheenPath.quadraticBezierTo(cx, cy - 28.dp.toPx(), cx - 32.dp.toPx(), cy - 20.dp.toPx())
-            sheenPath.close()
-            drawPath(
-                sheenPath,
-                brush = Brush.verticalGradient(
-                    colors = listOf(Color.White.copy(alpha = 0.075f), Color.Transparent),
+                // Static Glass Sheen Brush & Path
+                val glassSheenBrush = Brush.verticalGradient(
+                    colors = glassSheenColors,
                     startY = cy - 38.dp.toPx(),
                     endY = cy - 20.dp.toPx()
                 )
-            )
-
-            // ── E. Cute Expressive Eyes Coordinates (Lower-center for classic cute proportions) ──
-            val eyeCenterY = cy + 3.5.dp.toPx()
-            val eyeSpacing = 32.dp.toPx()
-            val totalGazeX = (animatedGazeX + connectingScanOffset).dp.toPx()
-            val totalGazeY = animatedGazeY.dp.toPx()
-
-            val leftEyeX = (cx - eyeSpacing / 2f) + totalGazeX
-            val leftEyeY = eyeCenterY + totalGazeY + leftEyeLift.dp.toPx()
-
-            val rightEyeX = (cx + eyeSpacing / 2f) + totalGazeX
-            val rightEyeY = eyeCenterY + totalGazeY
-
-            // Soft-feathered rosy cheek blush (warming up during speech and happy reaction)
-            val baseBlush = if (isPaused) 0.06f else 0.14f
-            val speakingBlush = amplitude * 0.22f
-            val happyBlush = if (showHappyEyes) 0.30f else 0f
-            val totalBlushAlpha = (baseBlush + speakingBlush + happyBlush).coerceIn(0f, 0.45f)
-            val blushR = 7.5.dp.toPx()
-
-            val leftBlushCenter = Offset(leftEyeX - 8.dp.toPx(), eyeCenterY + 8.5.dp.toPx())
-            drawCircle(
-                brush = Brush.radialGradient(
-                    colors = listOf(Color(0xFFFF6584).copy(alpha = totalBlushAlpha), Color.Transparent),
-                    center = leftBlushCenter,
-                    radius = blushR
-                ),
-                radius = blushR,
-                center = leftBlushCenter
-            )
-
-            val rightBlushCenter = Offset(rightEyeX + 8.dp.toPx(), eyeCenterY + 8.5.dp.toPx())
-            drawCircle(
-                brush = Brush.radialGradient(
-                    colors = listOf(Color(0xFFFF6584).copy(alpha = totalBlushAlpha), Color.Transparent),
-                    center = rightBlushCenter,
-                    radius = blushR
-                ),
-                radius = blushR,
-                center = rightBlushCenter
-            )
-
-            // Eye ambient blooms
-            val eyeBloomAlpha = if (isPaused) 0.04f else (0.12f + amplitude * 0.25f).coerceIn(0f, 0.38f)
-            drawCircle(
-                brush = Brush.radialGradient(
-                    colors = listOf(eyeColor.copy(alpha = eyeBloomAlpha), Color.Transparent),
-                    center = Offset(leftEyeX, leftEyeY),
-                    radius = 22.dp.toPx()
-                ),
-                radius = 22.dp.toPx(),
-                center = Offset(leftEyeX, leftEyeY)
-            )
-            drawCircle(
-                brush = Brush.radialGradient(
-                    colors = listOf(eyeColor.copy(alpha = eyeBloomAlpha), Color.Transparent),
-                    center = Offset(rightEyeX, rightEyeY),
-                    radius = 22.dp.toPx()
-                ),
-                radius = 22.dp.toPx(),
-                center = Offset(rightEyeX, rightEyeY)
-            )
-
-            // ── F. Render Expressive Eyes ──
-            when {
-                // State A: Joyful Happy Arcs (◠  ◠) on Countdown / Save Celebration
-                showHappyEyes -> {
-                    val arcHalfW = 6.dp.toPx()
-                    val arcH = 4.5.dp.toPx()
-
-                    leftEyePath.reset()
-                    leftEyePath.moveTo(leftEyeX - arcHalfW, leftEyeY + arcH * 0.35f)
-                    leftEyePath.quadraticBezierTo(leftEyeX, leftEyeY - arcH, leftEyeX + arcHalfW, leftEyeY + arcH * 0.35f)
-
-                    rightEyePath.reset()
-                    rightEyePath.moveTo(rightEyeX - arcHalfW, rightEyeY + arcH * 0.35f)
-                    rightEyePath.quadraticBezierTo(rightEyeX, rightEyeY - arcH, rightEyeX + arcHalfW, rightEyeY + arcH * 0.35f)
-
-                    // Bloom stroke + crisp stroke
-                    drawPath(leftEyePath, eyeColor.copy(alpha = 0.35f), style = Stroke(width = 5.5.dp.toPx(), cap = StrokeCap.Round))
-                    drawPath(rightEyePath, eyeColor.copy(alpha = 0.35f), style = Stroke(width = 5.5.dp.toPx(), cap = StrokeCap.Round))
-                    drawPath(leftEyePath, eyeColor, style = Stroke(width = 3.dp.toPx(), cap = StrokeCap.Round))
-                    drawPath(rightEyePath, eyeColor, style = Stroke(width = 3.dp.toPx(), cap = StrokeCap.Round))
+                val sheenPath = Path().apply {
+                    moveTo(cx - 32.dp.toPx(), cy - 20.dp.toPx())
+                    quadraticBezierTo(cx, cy - 38.dp.toPx(), cx + 32.dp.toPx(), cy - 20.dp.toPx())
+                    quadraticBezierTo(cx, cy - 28.dp.toPx(), cx - 32.dp.toPx(), cy - 20.dp.toPx())
+                    close()
                 }
 
-                // State B: Calm Sleepy Downward Arcs (◡  ◡) when Paused
-                isPaused -> {
-                    val arcHalfW = 6.dp.toPx()
-                    val arcH = 3.5.dp.toPx()
+                // Static Strokes
+                val stroke1dp = Stroke(width = 1.dp.toPx())
+                val stroke1_6dp = Stroke(width = 1.6.dp.toPx())
+                val stroke0_8dp = Stroke(width = 0.8.dp.toPx())
+                val stroke1_2dp = Stroke(width = 1.2.dp.toPx(), cap = StrokeCap.Round)
 
-                    leftEyePath.reset()
-                    leftEyePath.moveTo(leftEyeX - arcHalfW, leftEyeY - arcH * 0.35f)
-                    leftEyePath.quadraticBezierTo(leftEyeX, leftEyeY + arcH, leftEyeX + arcHalfW, leftEyeY - arcH * 0.35f)
+                val faceR = 45.dp.toPx()
 
-                    rightEyePath.reset()
-                    rightEyePath.moveTo(rightEyeX - arcHalfW, rightEyeY - arcH * 0.35f)
-                    rightEyePath.quadraticBezierTo(rightEyeX, rightEyeY + arcH, rightEyeX + arcHalfW, rightEyeY - arcH * 0.35f)
+                onDrawBehind {
+                    val bobOffset = animatedBobY.dp.toPx() + celebrationHop.dp.toPx()
 
-                    drawPath(leftEyePath, eyeColor.copy(alpha = 0.50f), style = Stroke(width = 2.4.dp.toPx(), cap = StrokeCap.Round))
-                    drawPath(rightEyePath, eyeColor.copy(alpha = 0.50f), style = Stroke(width = 2.4.dp.toPx(), cap = StrokeCap.Round))
-                }
+                    // Grounded Drop Shadow (stays on card while bot floats above)
+                    drawOval(
+                        brush = shadowBrush,
+                        topLeft = Offset(cx - shadowW / 2f, shadowY - shadowH / 2f),
+                        size = Size(shadowW, shadowH)
+                    )
 
-                // State C: Cute Glowing Oval Eyes with Specular Catchlights, Blinking & Slant
-                else -> {
-                    val baseW = 10.dp.toPx()
-                    val baseH = 15.dp.toPx()
-
-                    val eyeW = baseW + (amplitude * 1.5.dp.toPx())
-                    val eyeH = if (isBlinking) {
-                        2.2.dp.toPx()
-                    } else if (isConnecting) {
-                        8.5.dp.toPx() // Focused squint
-                    } else {
-                        baseH + (amplitude * 2.5.dp.toPx())
-                    }
-
-                    val leftW = eyeW * leftEyeWiden
-                    val leftH = eyeH * leftEyeWiden
-
-                    // Left Eye
-                    withTransform({
-                        if (isError) rotate(degrees = -7f, pivot = Offset(leftEyeX, leftEyeY))
-                    }) {
-                        // Eye body
-                        drawRoundRect(
-                            color = eyeColor,
-                            topLeft = Offset(leftEyeX - leftW / 2f, leftEyeY - leftH / 2f),
-                            size = Size(leftW, leftH),
-                            cornerRadius = CornerRadius(leftW / 2f, leftW / 2f)
-                        )
-                        // Specular Catchlights (Crisp primary + secondary sparkle dots)
-                        if (!isBlinking) {
+                    // Translate scope by bobOffset for floating bob and hop
+                    translate(left = 0f, top = bobOffset) {
+                        // ── A. Delicate Tonal Soundwave Rings ──
+                        if (!isPaused && !isError && isListening && amplitude > 0.03f) {
+                            val waveColor = if (theme.isDark) theme.accent else theme.textPrimary
+                            val r1 = headR + 3.dp.toPx() + (amplitude * 14.dp.toPx())
+                            val alpha1 = (amplitude * 0.22f).coerceIn(0f, 0.22f)
                             drawCircle(
-                                color = Color.White,
-                                radius = 1.6.dp.toPx(),
-                                center = Offset(leftEyeX + leftW * 0.22f, leftEyeY - leftH * 0.22f)
+                                color = waveColor.copy(alpha = alpha1),
+                                radius = r1,
+                                center = Offset(cx, cy),
+                                style = stroke1dp
                             )
-                            drawCircle(
-                                color = Color.White.copy(alpha = 0.75f),
-                                radius = 0.9.dp.toPx(),
-                                center = Offset(leftEyeX - leftW * 0.16f, leftEyeY + leftH * 0.18f)
+
+                            val r2 = headR + 2.dp.toPx() + ripplePhase * (12.dp.toPx() + amplitude * 8.dp.toPx())
+                            val alpha2 = ((1f - ripplePhase) * amplitude * 0.16f).coerceIn(0f, 0.16f)
+                            if (alpha2 > 0.015f) {
+                                drawCircle(
+                                    color = waveColor.copy(alpha = alpha2),
+                                    radius = r2,
+                                    center = Offset(cx, cy),
+                                    style = stroke0_8dp
+                                )
+                            }
+                        }
+
+                        // Language switching outer swirl pulse
+                        if (isConnecting) {
+                            val swirlR = headR + 3.dp.toPx()
+                            val swirlColor = if (theme.isDark) theme.accent else theme.textPrimary
+                            drawArc(
+                                color = swirlColor.copy(alpha = 0.25f),
+                                startAngle = swirlPhase,
+                                sweepAngle = 90f,
+                                useCenter = false,
+                                topLeft = Offset(cx - swirlR, cy - swirlR),
+                                size = Size(swirlR * 2f, swirlR * 2f),
+                                style = stroke1_2dp
+                            )
+                            drawArc(
+                                color = swirlColor.copy(alpha = 0.25f),
+                                startAngle = swirlPhase + 180f,
+                                sweepAngle = 90f,
+                                useCenter = false,
+                                topLeft = Offset(cx - swirlR, cy - swirlR),
+                                size = Size(swirlR * 2f, swirlR * 2f),
+                                style = stroke1_2dp
                             )
                         }
-                    }
 
-                    // Right Eye
-                    withTransform({
-                        if (isError) rotate(degrees = 7f, pivot = Offset(rightEyeX, rightEyeY))
-                    }) {
-                        // Eye body
-                        drawRoundRect(
-                            color = eyeColor,
-                            topLeft = Offset(rightEyeX - eyeW / 2f, rightEyeY - eyeH / 2f),
-                            size = Size(eyeW, eyeH),
-                            cornerRadius = CornerRadius(eyeW / 2f, eyeW / 2f)
+                        // ── B. Soft Multi-Layer Ambient Radial Glow behind the circular bot ──
+                        val ambientAlpha = if (isPaused) 0.02f else (0.04f + amplitude * 0.10f).coerceIn(0f, 0.14f)
+                        drawCircle(
+                            brush = Brush.radialGradient(
+                                colors = listOf(eyeColor.copy(alpha = ambientAlpha), Color.Transparent),
+                                center = Offset(cx, cy),
+                                radius = headR + 20.dp.toPx()
+                            ),
+                            radius = headR + 20.dp.toPx(),
+                            center = Offset(cx, cy)
                         )
-                        // Specular Catchlights
-                        if (!isBlinking) {
+
+                        // Subtle joyful micro-bounce (squash-and-stretch) while speaking
+                        val squashX = 1f + (amplitude * 0.035f)
+                        val squashY = 1f - (amplitude * 0.035f)
+
+                        withTransform({
+                            scale(scaleX = squashX, scaleY = squashY, pivot = Offset(cx, cy))
+                        }) {
+                            // ── C. Smooth Circular Outer Shell (Cached Brushes) ──
                             drawCircle(
-                                color = Color.White,
-                                radius = 1.6.dp.toPx(),
-                                center = Offset(rightEyeX + eyeW * 0.22f, rightEyeY - eyeH * 0.22f)
+                                brush = shellBrush,
+                                radius = headR,
+                                center = Offset(cx, cy)
+                            )
+
+                            // Delicate 1dp translucent rim highlight (Cached Brush)
+                            drawCircle(
+                                brush = rimBrush,
+                                radius = headR,
+                                center = Offset(cx, cy),
+                                style = stroke1dp
+                            )
+
+                            // ── D. Sleek Circular Recessed Dark-Glass Face ──
+                            drawCircle(
+                                color = recessedRimColor,
+                                radius = faceR + 1.2.dp.toPx(),
+                                center = Offset(cx, cy),
+                                style = stroke1_6dp
                             )
                             drawCircle(
-                                color = Color.White.copy(alpha = 0.75f),
-                                radius = 0.9.dp.toPx(),
-                                center = Offset(rightEyeX - eyeW * 0.16f, rightEyeY + eyeH * 0.18f)
+                                color = darkGlassBaseColor,
+                                radius = faceR,
+                                center = Offset(cx, cy)
                             )
+
+                            // Soft curved glass sheen near the top (Cached Brush & Path)
+                            drawPath(
+                                path = sheenPath,
+                                brush = glassSheenBrush
+                            )
+
+                            // ── E. Cute Expressive Eyes Coordinates ──
+                            val eyeCenterY = cy + 3.5.dp.toPx()
+                            val eyeSpacing = 32.dp.toPx()
+                            val totalGazeX = (animatedGazeX + connectingScanOffset).dp.toPx()
+                            val totalGazeY = animatedGazeY.dp.toPx()
+
+                            val leftEyeX = (cx - eyeSpacing / 2f) + totalGazeX
+                            val leftEyeY = eyeCenterY + totalGazeY + leftEyeLift.dp.toPx()
+
+                            val rightEyeX = (cx + eyeSpacing / 2f) + totalGazeX
+                            val rightEyeY = eyeCenterY + totalGazeY
+
+                            // Soft-feathered rosy cheek blush
+                            val baseBlush = if (isPaused) 0.06f else 0.14f
+                            val speakingBlush = amplitude * 0.22f
+                            val happyBlush = if (showHappyEyes) 0.30f else 0f
+                            val totalBlushAlpha = (baseBlush + speakingBlush + happyBlush).coerceIn(0f, 0.45f)
+                            val blushR = 7.5.dp.toPx()
+
+                            val leftBlushCenter = Offset(leftEyeX - 8.dp.toPx(), eyeCenterY + 8.5.dp.toPx())
+                            drawCircle(
+                                brush = Brush.radialGradient(
+                                    colors = listOf(Color(0xFFFF6584).copy(alpha = totalBlushAlpha), Color.Transparent),
+                                    center = leftBlushCenter,
+                                    radius = blushR
+                                ),
+                                radius = blushR,
+                                center = leftBlushCenter
+                            )
+
+                            val rightBlushCenter = Offset(rightEyeX + 8.dp.toPx(), eyeCenterY + 8.5.dp.toPx())
+                            drawCircle(
+                                brush = Brush.radialGradient(
+                                    colors = listOf(Color(0xFFFF6584).copy(alpha = totalBlushAlpha), Color.Transparent),
+                                    center = rightBlushCenter,
+                                    radius = blushR
+                                ),
+                                radius = blushR,
+                                center = rightBlushCenter
+                            )
+
+                            // Eye ambient blooms
+                            val eyeBloomAlpha = if (isPaused) 0.04f else (0.12f + amplitude * 0.25f).coerceIn(0f, 0.38f)
+                            drawCircle(
+                                brush = Brush.radialGradient(
+                                    colors = listOf(eyeColor.copy(alpha = eyeBloomAlpha), Color.Transparent),
+                                    center = Offset(leftEyeX, leftEyeY),
+                                    radius = 22.dp.toPx()
+                                ),
+                                radius = 22.dp.toPx(),
+                                center = Offset(leftEyeX, leftEyeY)
+                            )
+                            drawCircle(
+                                brush = Brush.radialGradient(
+                                    colors = listOf(eyeColor.copy(alpha = eyeBloomAlpha), Color.Transparent),
+                                    center = Offset(rightEyeX, rightEyeY),
+                                    radius = 22.dp.toPx()
+                                ),
+                                radius = 22.dp.toPx(),
+                                center = Offset(rightEyeX, rightEyeY)
+                            )
+
+                            // ── F. Render Expressive Eyes ──
+                            when {
+                                // State A: Joyful Happy Arcs (◠  ◠) on Countdown / Save Celebration
+                                showHappyEyes -> {
+                                    val arcHalfW = 6.dp.toPx()
+                                    val arcH = 4.5.dp.toPx()
+
+                                    leftEyePath.reset()
+                                    leftEyePath.moveTo(leftEyeX - arcHalfW, leftEyeY + arcH * 0.35f)
+                                    leftEyePath.quadraticBezierTo(leftEyeX, leftEyeY - arcH, leftEyeX + arcHalfW, leftEyeY + arcH * 0.35f)
+
+                                    rightEyePath.reset()
+                                    rightEyePath.moveTo(rightEyeX - arcHalfW, rightEyeY + arcH * 0.35f)
+                                    rightEyePath.quadraticBezierTo(rightEyeX, rightEyeY - arcH, rightEyeX + arcHalfW, rightEyeY + arcH * 0.35f)
+
+                                    drawPath(leftEyePath, eyeColor.copy(alpha = 0.35f), style = Stroke(width = 5.5.dp.toPx(), cap = StrokeCap.Round))
+                                    drawPath(rightEyePath, eyeColor.copy(alpha = 0.35f), style = Stroke(width = 5.5.dp.toPx(), cap = StrokeCap.Round))
+                                    drawPath(leftEyePath, eyeColor, style = Stroke(width = 3.dp.toPx(), cap = StrokeCap.Round))
+                                    drawPath(rightEyePath, eyeColor, style = Stroke(width = 3.dp.toPx(), cap = StrokeCap.Round))
+                                }
+
+                                // State B: Calm Sleepy Downward Arcs (◡  ◡) when Paused
+                                isPaused -> {
+                                    val arcHalfW = 6.dp.toPx()
+                                    val arcH = 3.5.dp.toPx()
+
+                                    leftEyePath.reset()
+                                    leftEyePath.moveTo(leftEyeX - arcHalfW, leftEyeY - arcH * 0.35f)
+                                    leftEyePath.quadraticBezierTo(leftEyeX, leftEyeY + arcH, leftEyeX + arcHalfW, leftEyeY - arcH * 0.35f)
+
+                                    rightEyePath.reset()
+                                    rightEyePath.moveTo(rightEyeX - arcHalfW, rightEyeY - arcH * 0.35f)
+                                    rightEyePath.quadraticBezierTo(rightEyeX, rightEyeY + arcH, rightEyeX + arcHalfW, rightEyeY - arcH * 0.35f)
+
+                                    drawPath(leftEyePath, eyeColor.copy(alpha = 0.50f), style = Stroke(width = 2.4.dp.toPx(), cap = StrokeCap.Round))
+                                    drawPath(rightEyePath, eyeColor.copy(alpha = 0.50f), style = Stroke(width = 2.4.dp.toPx(), cap = StrokeCap.Round))
+                                }
+
+                                // State C: Cute Glowing Oval Eyes with Specular Catchlights, Blinking & Slant
+                                else -> {
+                                    val baseW = 10.dp.toPx()
+                                    val baseH = 15.dp.toPx()
+
+                                    val eyeW = baseW + (amplitude * 1.5.dp.toPx())
+                                    val eyeH = if (isBlinking) {
+                                        2.2.dp.toPx()
+                                    } else if (isConnecting) {
+                                        8.5.dp.toPx()
+                                    } else {
+                                        baseH + (amplitude * 2.5.dp.toPx())
+                                    }
+
+                                    val leftW = eyeW * leftEyeWiden
+                                    val leftH = eyeH * leftEyeWiden
+
+                                    // Left Eye
+                                    withTransform({
+                                        if (isError) rotate(degrees = -7f, pivot = Offset(leftEyeX, leftEyeY))
+                                    }) {
+                                        drawRoundRect(
+                                            color = eyeColor,
+                                            topLeft = Offset(leftEyeX - leftW / 2f, leftEyeY - leftH / 2f),
+                                            size = Size(leftW, leftH),
+                                            cornerRadius = CornerRadius(leftW / 2f, leftW / 2f)
+                                        )
+                                        if (!isBlinking) {
+                                            drawCircle(
+                                                color = Color.White,
+                                                radius = 1.6.dp.toPx(),
+                                                center = Offset(leftEyeX + leftW * 0.22f, leftEyeY - leftH * 0.22f)
+                                            )
+                                            drawCircle(
+                                                color = Color.White.copy(alpha = 0.75f),
+                                                radius = 0.9.dp.toPx(),
+                                                center = Offset(leftEyeX - leftW * 0.16f, leftEyeY + leftH * 0.18f)
+                                            )
+                                        }
+                                    }
+
+                                    // Right Eye
+                                    withTransform({
+                                        if (isError) rotate(degrees = 7f, pivot = Offset(rightEyeX, rightEyeY))
+                                    }) {
+                                        drawRoundRect(
+                                            color = eyeColor,
+                                            topLeft = Offset(rightEyeX - eyeW / 2f, rightEyeY - eyeH / 2f),
+                                            size = Size(eyeW, eyeH),
+                                            cornerRadius = CornerRadius(eyeW / 2f, eyeW / 2f)
+                                        )
+                                        if (!isBlinking) {
+                                            drawCircle(
+                                                color = Color.White,
+                                                radius = 1.6.dp.toPx(),
+                                                center = Offset(rightEyeX + eyeW * 0.22f, rightEyeY - eyeH * 0.22f)
+                                            )
+                                            drawCircle(
+                                                color = Color.White.copy(alpha = 0.75f),
+                                                radius = 0.9.dp.toPx(),
+                                                center = Offset(rightEyeX - eyeW * 0.16f, rightEyeY + eyeH * 0.18f)
+                                            )
+                                        }
+                                    }
+
+                                    // Empathetic delicate eyebrows in Error state
+                                    if (isError) {
+                                        drawLine(
+                                            color = eyeColor,
+                                            start = Offset(leftEyeX - 4.dp.toPx(), leftEyeY - 11.5.dp.toPx()),
+                                            end = Offset(leftEyeX + 4.dp.toPx(), leftEyeY - 9.5.dp.toPx()),
+                                            strokeWidth = 1.6.dp.toPx(),
+                                            cap = StrokeCap.Round
+                                        )
+                                        drawLine(
+                                            color = eyeColor,
+                                            start = Offset(rightEyeX - 4.dp.toPx(), rightEyeY - 9.5.dp.toPx()),
+                                            end = Offset(rightEyeX + 4.dp.toPx(), rightEyeY - 11.5.dp.toPx()),
+                                            strokeWidth = 1.6.dp.toPx(),
+                                            cap = StrokeCap.Round
+                                        )
+                                    }
+                                }
+                            }
+
+                            // ── G. Cute Reactive Mouth ──
+                            val mouthX = cx + (totalGazeX * 0.5f)
+                            val mouthY = eyeCenterY + 11.5.dp.toPx()
+
+                            when {
+                                isThinkingPause -> {
+                                    drawCircle(
+                                        color = eyeColor,
+                                        radius = 1.8.dp.toPx(),
+                                        center = Offset(mouthX, mouthY),
+                                        style = Stroke(width = 1.4.dp.toPx())
+                                    )
+                                }
+
+                                isError -> {
+                                    mouthPath.reset()
+                                    mouthPath.moveTo(mouthX - 4.5.dp.toPx(), mouthY)
+                                    mouthPath.cubicTo(
+                                        mouthX - 2.2.dp.toPx(), mouthY - 1.8.dp.toPx(),
+                                        mouthX + 2.2.dp.toPx(), mouthY + 1.8.dp.toPx(),
+                                        mouthX + 4.5.dp.toPx(), mouthY
+                                    )
+                                    drawPath(
+                                        mouthPath,
+                                        color = eyeColor,
+                                        style = Stroke(width = 1.8.dp.toPx(), cap = StrokeCap.Round)
+                                    )
+                                }
+
+                                showHappyEyes -> {
+                                    mouthPath.reset()
+                                    mouthPath.moveTo(mouthX - 5.5.dp.toPx(), mouthY - 1.dp.toPx())
+                                    mouthPath.quadraticBezierTo(mouthX, mouthY + 5.dp.toPx(), mouthX + 5.5.dp.toPx(), mouthY - 1.dp.toPx())
+                                    mouthPath.close()
+                                    drawPath(mouthPath, color = eyeColor, style = Fill)
+                                    drawPath(mouthPath, color = Color.White.copy(alpha = 0.5f), style = stroke1dp)
+                                }
+
+                                amplitude > 0.05f && !isPaused && isListening -> {
+                                    val openH = (amplitude * 5.2.dp.toPx()).coerceAtMost(5.5.dp.toPx())
+                                    mouthPath.reset()
+                                    mouthPath.moveTo(mouthX - 4.dp.toPx(), mouthY)
+                                    mouthPath.quadraticBezierTo(mouthX, mouthY - 1.dp.toPx(), mouthX + 4.dp.toPx(), mouthY)
+                                    mouthPath.quadraticBezierTo(mouthX, mouthY + openH, mouthX - 4.dp.toPx(), mouthY)
+                                    mouthPath.close()
+                                    drawPath(mouthPath, color = eyeColor.copy(alpha = 0.85f), style = Fill)
+                                    drawPath(mouthPath, color = eyeColor, style = Stroke(width = 1.4.dp.toPx(), cap = StrokeCap.Round))
+                                }
+
+                                else -> {
+                                    mouthPath.reset()
+                                    mouthPath.moveTo(mouthX - 4.dp.toPx(), mouthY)
+                                    mouthPath.quadraticBezierTo(mouthX, mouthY + 2.5.dp.toPx(), mouthX + 4.dp.toPx(), mouthY)
+                                    drawPath(
+                                        mouthPath,
+                                        color = eyeColor.copy(alpha = if (isPaused) 0.45f else 0.85f),
+                                        style = Stroke(width = 1.8.dp.toPx(), cap = StrokeCap.Round)
+                                    )
+                                }
+                            }
                         }
-                    }
-
-                    // Empathetic delicate eyebrows in Error state
-                    if (isError) {
-                        drawLine(
-                            color = eyeColor,
-                            start = Offset(leftEyeX - 4.dp.toPx(), leftEyeY - 11.5.dp.toPx()),
-                            end = Offset(leftEyeX + 4.dp.toPx(), leftEyeY - 9.5.dp.toPx()),
-                            strokeWidth = 1.6.dp.toPx(),
-                            cap = StrokeCap.Round
-                        )
-                        drawLine(
-                            color = eyeColor,
-                            start = Offset(rightEyeX - 4.dp.toPx(), rightEyeY - 9.5.dp.toPx()),
-                            end = Offset(rightEyeX + 4.dp.toPx(), rightEyeY - 11.5.dp.toPx()),
-                            strokeWidth = 1.6.dp.toPx(),
-                            cap = StrokeCap.Round
-                        )
                     }
                 }
             }
-
-            // ── G. Cute Reactive Mouth (Centered below eyes) ──
-            val mouthX = cx + (totalGazeX * 0.5f)
-            val mouthY = eyeCenterY + 11.5.dp.toPx()
-
-            when {
-                // 1. Thinking Pause: tiny neutral "o" mouth
-                isThinkingPause -> {
-                    drawCircle(
-                        color = eyeColor,
-                        radius = 1.8.dp.toPx(),
-                        center = Offset(mouthX, mouthY),
-                        style = Stroke(width = 1.4.dp.toPx())
-                    )
-                }
-
-                // 2. Error State: tiny wavy mouth (~)
-                isError -> {
-                    mouthPath.reset()
-                    mouthPath.moveTo(mouthX - 4.5.dp.toPx(), mouthY)
-                    mouthPath.cubicTo(
-                        mouthX - 2.2.dp.toPx(), mouthY - 1.8.dp.toPx(),
-                        mouthX + 2.2.dp.toPx(), mouthY + 1.8.dp.toPx(),
-                        mouthX + 4.5.dp.toPx(), mouthY
-                    )
-                    drawPath(
-                        mouthPath,
-                        color = eyeColor,
-                        style = Stroke(width = 1.8.dp.toPx(), cap = StrokeCap.Round)
-                    )
-                }
-
-                // 3. Countdown / Save Celebration: wide cute open happy grin
-                showHappyEyes -> {
-                    mouthPath.reset()
-                    mouthPath.moveTo(mouthX - 5.5.dp.toPx(), mouthY - 1.dp.toPx())
-                    mouthPath.quadraticBezierTo(mouthX, mouthY + 5.dp.toPx(), mouthX + 5.5.dp.toPx(), mouthY - 1.dp.toPx())
-                    mouthPath.close()
-                    drawPath(mouthPath, color = eyeColor, style = Fill)
-                    drawPath(mouthPath, color = Color.White.copy(alpha = 0.5f), style = Stroke(width = 1.dp.toPx()))
-                }
-
-                // 4. Actively Speaking: morphs/opens into a cute tiny talking mouth
-                amplitude > 0.05f && !isPaused && isListening -> {
-                    val openH = (amplitude * 5.2.dp.toPx()).coerceAtMost(5.5.dp.toPx())
-                    mouthPath.reset()
-                    mouthPath.moveTo(mouthX - 4.dp.toPx(), mouthY)
-                    mouthPath.quadraticBezierTo(mouthX, mouthY - 1.dp.toPx(), mouthX + 4.dp.toPx(), mouthY)
-                    mouthPath.quadraticBezierTo(mouthX, mouthY + openH, mouthX - 4.dp.toPx(), mouthY)
-                    mouthPath.close()
-                    drawPath(mouthPath, color = eyeColor.copy(alpha = 0.85f), style = Fill)
-                    drawPath(mouthPath, color = eyeColor, style = Stroke(width = 1.4.dp.toPx(), cap = StrokeCap.Round))
-                }
-
-                // 5. Idle Resting or Paused: gentle subtle smile (◡)
-                else -> {
-                    mouthPath.reset()
-                    mouthPath.moveTo(mouthX - 4.dp.toPx(), mouthY)
-                    mouthPath.quadraticBezierTo(mouthX, mouthY + 2.5.dp.toPx(), mouthX + 4.dp.toPx(), mouthY)
-                    drawPath(
-                        mouthPath,
-                        color = eyeColor.copy(alpha = if (isPaused) 0.45f else 0.85f),
-                        style = Stroke(width = 1.8.dp.toPx(), cap = StrokeCap.Round)
-                    )
-                }
-            }
-        }
-    }
+    )
 }
 
 /**
@@ -1401,7 +1546,6 @@ private fun LanguageSlidingToggle(
             .border(1.dp, theme.textPrimary.copy(alpha = 0.10f), RoundedCornerShape(14.dp)),
         contentAlignment = Alignment.CenterStart
     ) {
-        // Sliding active segment pill (clean elevated fill, crisp ink text, no glowing border)
         val pillBg = if (theme.isDark) Color(0xFF2C3036) else Color.White
         val pillBorder = theme.textPrimary.copy(alpha = if (theme.isDark) 0.14f else 0.08f)
         Box(
@@ -1414,7 +1558,6 @@ private fun LanguageSlidingToggle(
                 .border(0.8.dp, pillBorder, RoundedCornerShape(11.dp))
         )
 
-        // Options
         Row(
             modifier = Modifier.fillMaxSize(),
             verticalAlignment = Alignment.CenterVertically

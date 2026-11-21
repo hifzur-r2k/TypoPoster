@@ -329,4 +329,18 @@ class CountdownHelperTest {
         assertEquals(141L, badges4[0].minutesDiff)
         assertEquals("in 2h 21m", badges4[0].label)
     }
+
+    @Test
+    fun testEmailAddressDoesNotTriggerCountdown() {
+        val emailText = "Please reach out to raj@gmail.com for inquiries"
+        val badges = CountdownHelper.parseAll(emailText, fixedToday)
+        assertTrue(badges.isEmpty())
+        assertNull(CountdownHelper.findNearest(emailText, fixedToday))
+
+        // Email followed by a genuine deadline tag matches only the deadline tag
+        val emailWithDeadline = "Contact raj@gmail.com by @tomorrow"
+        val deadlineBadges = CountdownHelper.parseAll(emailWithDeadline, fixedToday)
+        assertEquals(1, deadlineBadges.size)
+        assertEquals("@tomorrow", deadlineBadges[0].tag)
+    }
 }
