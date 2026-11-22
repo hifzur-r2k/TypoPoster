@@ -7,6 +7,8 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.Image
@@ -25,12 +27,18 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
@@ -75,6 +83,29 @@ fun CameraScanSheet(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val clipboardManager = LocalClipboardManager.current
+    val haptic = LocalHapticFeedback.current
+    fun tick() = haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val textScrollState = rememberScrollState()
+
+    val textEditorNestedScroll = remember {
+        object : NestedScrollConnection {
+            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+                return Offset.Zero
+            }
+
+            override fun onPostScroll(
+                consumed: Offset,
+                available: Offset,
+                source: NestedScrollSource
+            ): Offset {
+                // Absorb remaining vertical scroll delta within the text editor so scrolling
+                // long OCR text feels effortless without dragging down or dismissing the bottom sheet
+                return Offset(0f, available.y)
+            }
+        }
+    }
 
     // State persisted across configuration / process recreation
     var activeUriString by rememberSaveable { mutableStateOf<String?>(null) }
@@ -178,6 +209,7 @@ fun CameraScanSheet(
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
+        sheetState = sheetState,
         containerColor = theme.surfaceVariant,
         shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
         dragHandle = {
@@ -250,6 +282,7 @@ fun CameraScanSheet(
                                 .background(if (isEn) theme.accent.copy(alpha = 0.16f) else Color.Transparent)
                                 .clickable {
                                     if (selectedLanguage != OcrLanguage.ENGLISH) {
+                                        tick()
                                         selectedLanguage = OcrLanguage.ENGLISH
                                         activeUri?.let { processImage(it, manualRotation, OcrLanguage.ENGLISH) }
                                     }
@@ -274,6 +307,7 @@ fun CameraScanSheet(
                                 .background(if (isHi) theme.accent.copy(alpha = 0.16f) else Color.Transparent)
                                 .clickable {
                                     if (selectedLanguage != OcrLanguage.HINDI) {
+                                        tick()
                                         selectedLanguage = OcrLanguage.HINDI
                                         activeUri?.let { processImage(it, manualRotation, OcrLanguage.HINDI) }
                                     }
@@ -289,7 +323,10 @@ fun CameraScanSheet(
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Medium,
                         letterSpacing = 1.sp,
-                        modifier = Modifier.clickable(onClick = onDismiss),
+                        modifier = Modifier.clickable {
+                            tick()
+                            onDismiss()
+                        },
                     )
                 }
             }
@@ -410,6 +447,7 @@ fun CameraScanSheet(
                             .clip(RoundedCornerShape(10.dp))
                             .background(theme.surfaceVariant)
                             .clickable {
+                                tick()
                                 processImage(activeUri, (manualRotation + 90) % 360, selectedLanguage)
                             }
                             .padding(horizontal = 10.dp, vertical = 6.dp),
@@ -453,7 +491,10 @@ fun CameraScanSheet(
                             .clip(RoundedCornerShape(16.dp))
                             .background(theme.background)
                             .border(1.dp, theme.accent.copy(alpha = 0.3f), RoundedCornerShape(16.dp))
-                            .clickable { startCameraCapture() }
+                            .clickable {
+                                tick()
+                                startCameraCapture()
+                            }
                             .padding(vertical = 20.dp, horizontal = 12.dp),
                         contentAlignment = Alignment.Center,
                     ) {
@@ -489,7 +530,10 @@ fun CameraScanSheet(
                             .weight(1f)
                             .clip(RoundedCornerShape(16.dp))
                             .background(theme.background)
-                            .clickable { galleryLauncher.launch("image/*") }
+                            .clickable {
+                                tick()
+                                galleryLauncher.launch("image/*")
+                            }
                             .padding(vertical = 20.dp, horizontal = 12.dp),
                         contentAlignment = Alignment.Center,
                     ) {
@@ -551,6 +595,7 @@ fun CameraScanSheet(
                                 .clip(RoundedCornerShape(10.dp))
                                 .background(if (isPoints) theme.accent.copy(alpha = 0.22f) else theme.background)
                                 .clickable {
+                                    tick()
                                     formatMode = OcrFormatMode.POINTWISE
                                     ocrResult?.let { editedText = it.pointwiseText }
                                 }
@@ -582,6 +627,7 @@ fun CameraScanSheet(
                                 .clip(RoundedCornerShape(10.dp))
                                 .background(if (isClean) theme.accent.copy(alpha = 0.22f) else theme.background)
                                 .clickable {
+                                    tick()
                                     formatMode = OcrFormatMode.CLEAN
                                     ocrResult?.let { editedText = it.cleanText }
                                 }
@@ -602,6 +648,7 @@ fun CameraScanSheet(
                                 .clip(RoundedCornerShape(10.dp))
                                 .background(if (isGrid) theme.accent.copy(alpha = 0.22f) else theme.background)
                                 .clickable {
+                                    tick()
                                     formatMode = OcrFormatMode.GRID_TABLE
                                     ocrResult?.let { editedText = it.gridTableText }
                                 }
@@ -633,6 +680,7 @@ fun CameraScanSheet(
                                 .clip(RoundedCornerShape(10.dp))
                                 .background(if (isFlow) theme.accent.copy(alpha = 0.22f) else theme.background)
                                 .clickable {
+                                    tick()
                                     formatMode = OcrFormatMode.SMART_FLOW
                                     ocrResult?.let { editedText = it.smartFlowText }
                                 }
@@ -653,6 +701,7 @@ fun CameraScanSheet(
                                 .clip(RoundedCornerShape(10.dp))
                                 .background(if (isExact) theme.accent.copy(alpha = 0.22f) else theme.background)
                                 .clickable {
+                                    tick()
                                     formatMode = OcrFormatMode.EXACT_LINES
                                     ocrResult?.let { editedText = it.exactText }
                                 }
@@ -677,6 +726,7 @@ fun CameraScanSheet(
                         .clip(RoundedCornerShape(16.dp))
                         .background(theme.background)
                         .border(1.dp, theme.accent.copy(alpha = 0.25f), RoundedCornerShape(16.dp))
+                        .nestedScroll(textEditorNestedScroll)
                         .padding(18.dp),
                 ) {
                     Column {
@@ -695,7 +745,8 @@ fun CameraScanSheet(
                             onValueChange = { editedText = it },
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .heightIn(min = 100.dp, max = 240.dp),
+                                .heightIn(min = 100.dp, max = 260.dp)
+                                .verticalScroll(textScrollState),
                             textStyle = TextStyle(
                                 color = theme.textPrimary,
                                 fontSize = if (editedText.length <= 80) 18.sp else 15.sp,
@@ -731,6 +782,7 @@ fun CameraScanSheet(
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(4.dp),
                                     modifier = Modifier.clickable {
+                                        tick()
                                         clipboardManager.setText(AnnotatedString(editedText))
                                         isCopied = true
                                         scope.launch {
@@ -752,7 +804,10 @@ fun CameraScanSheet(
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(4.dp),
-                                    modifier = Modifier.clickable { startCameraCapture() }
+                                    modifier = Modifier.clickable {
+                                        tick()
+                                        startCameraCapture()
+                                    }
                                 ) {
                                     Icon(
                                         painter = painterResource(id = R.drawable.ic_refresh),
@@ -782,6 +837,7 @@ fun CameraScanSheet(
                         .clip(RoundedCornerShape(14.dp))
                         .background(theme.accent)
                         .clickable {
+                            tick()
                             onApplyText(editedText, ScanApplyMode.NEW_NOTE, true)
                             onDismiss()
                         }
@@ -822,6 +878,7 @@ fun CameraScanSheet(
                             .clip(RoundedCornerShape(12.dp))
                             .background(theme.background)
                             .clickable {
+                                tick()
                                 onApplyText(editedText, ScanApplyMode.NEW_NOTE, false)
                                 onDismiss()
                             }
@@ -844,6 +901,7 @@ fun CameraScanSheet(
                             .clip(RoundedCornerShape(12.dp))
                             .background(theme.background)
                             .clickable {
+                                tick()
                                 onApplyText(editedText, ScanApplyMode.REPLACE, false)
                                 onDismiss()
                             }
@@ -866,6 +924,7 @@ fun CameraScanSheet(
                             .clip(RoundedCornerShape(12.dp))
                             .background(theme.background)
                             .clickable {
+                                tick()
                                 onApplyText(editedText, ScanApplyMode.APPEND, false)
                                 onDismiss()
                             }

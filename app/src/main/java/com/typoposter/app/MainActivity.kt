@@ -7,9 +7,11 @@ import android.widget.Toast
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.core.view.WindowCompat
 import androidx.fragment.app.FragmentActivity
 import com.typoposter.app.auth.BiometricHelper
 import com.typoposter.app.ui.NoteScreen
@@ -29,6 +31,14 @@ class MainActivity : FragmentActivity() {
 
         setContent {
             val uiState by viewModel.uiState.collectAsState()
+
+            // Dynamically synchronize system status bar and navigation bar icon contrast with active theme
+            DisposableEffect(uiState.theme.isDark) {
+                val insetsController = WindowCompat.getInsetsController(window, window.decorView)
+                insetsController.isAppearanceLightStatusBars = !uiState.theme.isDark
+                insetsController.isAppearanceLightNavigationBars = !uiState.theme.isDark
+                onDispose {}
+            }
 
             // Apply FLAG_SECURE only while viewing an unlocked private note (remove for normal notes)
             LaunchedEffect(uiState.activeNote.isLocked, uiState.isCurrentNoteUnlocked) {

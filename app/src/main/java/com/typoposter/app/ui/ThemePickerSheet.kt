@@ -14,6 +14,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -33,6 +35,8 @@ fun ThemePickerSheet(
     onThemeSelected: (Int) -> Unit,
     onDismiss: () -> Unit,
 ) {
+    val haptic = LocalHapticFeedback.current
+
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         containerColor = activeTheme.surfaceVariant,
@@ -70,7 +74,10 @@ fun ThemePickerSheet(
                     theme = theme,
                     isSelected = index == currentThemeIndex,
                     activeTheme = activeTheme,
-                    onClick = { onThemeSelected(index) },
+                    onClick = {
+                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        onThemeSelected(index)
+                    },
                 )
                 if (index < ThemeEngine.allThemes.lastIndex) {
                     Spacer(modifier = Modifier.height(12.dp))
@@ -93,8 +100,8 @@ private fun ThemeCard(
     onClick: () -> Unit,
 ) {
     val borderColor = animateColorAsState(
-        targetValue = if (isSelected) activeTheme.accent else Color.Transparent,
-        animationSpec = tween(200),
+        targetValue = if (isSelected) activeTheme.accent else activeTheme.textSecondary.copy(alpha = 0.15f),
+        animationSpec = tween(180),
         label = "border",
     )
 

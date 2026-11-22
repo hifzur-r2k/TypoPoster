@@ -41,6 +41,8 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
@@ -119,6 +121,7 @@ fun NoteScreen(
     }
 
     val context = LocalContext.current
+    val haptic = LocalHapticFeedback.current
     val coroutineScope = rememberCoroutineScope()
     var speechState by remember { mutableStateOf<SpeechState>(SpeechState.Idle) }
     var voiceLanguage by remember { mutableStateOf(VoiceLanguage.ENGLISH) }
@@ -242,22 +245,22 @@ fun NoteScreen(
 
     val backgroundColor = animateColorAsState(
         targetValue = theme.background,
-        animationSpec = tween(400),
+        animationSpec = tween(220),
         label = "bg",
     )
     val textColor = animateColorAsState(
         targetValue = theme.textPrimary,
-        animationSpec = tween(400),
+        animationSpec = tween(220),
         label = "text",
     )
     val secondaryColor = animateColorAsState(
         targetValue = theme.textSecondary,
-        animationSpec = tween(400),
+        animationSpec = tween(220),
         label = "secondary",
     )
     val accentColor = animateColorAsState(
         targetValue = theme.accent,
-        animationSpec = tween(400),
+        animationSpec = tween(220),
         label = "accent",
     )
 
@@ -290,8 +293,8 @@ fun NoteScreen(
                 // App Logo
                 Text(
                     text = "typo",
-                    color = secondaryColor.value.copy(alpha = 0.5f),
-                    fontSize = 12.sp,
+                    color = secondaryColor.value.copy(alpha = 0.55f),
+                    fontSize = 13.sp,
                     fontFamily = theme.headerFont,
                     fontWeight = FontWeight.Medium,
                     letterSpacing = 4.sp,
@@ -300,15 +303,20 @@ fun NoteScreen(
                 // Actions: Scan button + Voice button + Add to Widget button + Theme button
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     // Direct "SCAN" button with Camera icon
                     Box(
                         modifier = Modifier
-                            .clip(RoundedCornerShape(16.dp))
-                            .background(theme.surfaceVariant.copy(alpha = 0.6f))
-                            .clickable(onClick = onScanClicked)
-                            .padding(horizontal = 8.dp, vertical = 5.dp),
+                            .height(28.dp)
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(theme.surfaceVariant.copy(alpha = if (theme.isDark) 0.65f else 0.8f))
+                            .border(1.dp, theme.textSecondary.copy(alpha = 0.14f), RoundedCornerShape(14.dp))
+                            .clickable {
+                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                onScanClicked()
+                            }
+                            .padding(horizontal = 8.dp),
                         contentAlignment = Alignment.Center,
                     ) {
                         Row(
@@ -334,13 +342,23 @@ fun NoteScreen(
                     // Direct "VOICE" button with Mic icon
                     Box(
                         modifier = Modifier
-                            .clip(RoundedCornerShape(16.dp))
+                            .height(28.dp)
+                            .clip(RoundedCornerShape(14.dp))
                             .background(
                                 if (isListening) accentColor.value.copy(alpha = 0.25f)
-                                else theme.surfaceVariant.copy(alpha = 0.6f)
+                                else theme.surfaceVariant.copy(alpha = if (theme.isDark) 0.65f else 0.8f)
                             )
-                            .clickable(onClick = onToggleVoice)
-                            .padding(horizontal = 8.dp, vertical = 5.dp),
+                            .border(
+                                1.dp,
+                                if (isListening) accentColor.value.copy(alpha = 0.5f)
+                                else theme.textSecondary.copy(alpha = 0.14f),
+                                RoundedCornerShape(14.dp)
+                            )
+                            .clickable {
+                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                onToggleVoice()
+                            }
+                            .padding(horizontal = 8.dp),
                         contentAlignment = Alignment.Center,
                     ) {
                         Row(
@@ -366,10 +384,15 @@ fun NoteScreen(
                     // Direct "Add to Widget" button
                     Box(
                         modifier = Modifier
-                            .clip(RoundedCornerShape(16.dp))
-                            .background(accentColor.value.copy(alpha = 0.12f))
-                            .clickable(onClick = onPinWidgetClicked)
-                            .padding(horizontal = 10.dp, vertical = 5.dp),
+                            .height(28.dp)
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(accentColor.value.copy(alpha = if (theme.isDark) 0.14f else 0.12f))
+                            .border(1.dp, accentColor.value.copy(alpha = 0.35f), RoundedCornerShape(14.dp))
+                            .clickable {
+                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                onPinWidgetClicked()
+                            }
+                            .padding(horizontal = 9.dp),
                         contentAlignment = Alignment.Center,
                     ) {
                         Text(
@@ -384,13 +407,17 @@ fun NoteScreen(
                     // Theme color button
                     Box(
                         modifier = Modifier
-                            .size(32.dp)
+                            .size(30.dp)
                             .clip(CircleShape)
                             .background(accentColor.value.copy(alpha = 0.15f))
+                            .border(1.dp, accentColor.value.copy(alpha = 0.35f), CircleShape)
                             .clickable(
                                 indication = null,
                                 interactionSource = remember { MutableInteractionSource() },
-                                onClick = onThemeButtonClicked,
+                                onClick = {
+                                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                    onThemeButtonClicked()
+                                },
                             ),
                         contentAlignment = Alignment.Center,
                     ) {
@@ -416,16 +443,32 @@ fun NoteScreen(
             ) {
                 uiState.notes.forEach { note ->
                     val isSelected = note.id == activeNote.id
-                    val tabBg = if (isSelected) accentColor.value.copy(alpha = 0.15f)
-                    else theme.surfaceVariant.copy(alpha = 0.5f)
-                    val tabText = if (isSelected) textColor.value else secondaryColor.value
+                    val tabBg = if (isSelected) {
+                        if (theme.isDark) accentColor.value.copy(alpha = 0.22f) else accentColor.value.copy(alpha = 0.16f)
+                    } else {
+                        if (theme.isDark) theme.surfaceVariant.copy(alpha = 0.55f) else theme.surfaceVariant.copy(alpha = 0.75f)
+                    }
+                    val tabBorderColor = if (isSelected) {
+                        accentColor.value.copy(alpha = if (theme.isDark) 0.55f else 0.45f)
+                    } else {
+                        theme.textSecondary.copy(alpha = if (theme.isDark) 0.16f else 0.13f)
+                    }
+                    val tabText = if (isSelected) {
+                        if (theme.isDark) textColor.value else accentColor.value
+                    } else {
+                        secondaryColor.value.copy(alpha = 0.85f)
+                    }
 
                     Box(
                         modifier = Modifier
                             .clip(RoundedCornerShape(20.dp))
                             .background(tabBg)
+                            .border(1.dp, tabBorderColor, RoundedCornerShape(20.dp))
                             .combinedClickable(
-                                onClick = { onNoteSelected(note.id) },
+                                onClick = {
+                                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                    onNoteSelected(note.id)
+                                },
                                 onLongClick = {
                                     if (isSelected) onShowRenameDialog()
                                 }
@@ -508,10 +551,14 @@ fun NoteScreen(
                 // Plus button to add note
                 Box(
                     modifier = Modifier
-                        .size(28.dp)
+                        .size(30.dp)
                         .clip(CircleShape)
-                        .background(theme.surfaceVariant.copy(alpha = 0.5f))
-                        .clickable(onClick = onCreateNewNote),
+                        .background(theme.surfaceVariant.copy(alpha = if (theme.isDark) 0.6f else 0.8f))
+                        .border(1.dp, theme.textSecondary.copy(alpha = 0.15f), CircleShape)
+                        .clickable {
+                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            onCreateNewNote()
+                        },
                     contentAlignment = Alignment.Center,
                 ) {
                     Text(
@@ -633,6 +680,7 @@ fun NoteScreen(
                             textColor = textColor.value,
                             secondaryColor = secondaryColor.value,
                             onApply = {
+                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                                 val updated = SmartCalculatorHelper.applySuggestion(textFieldValue, calcSuggestion)
                                 textFieldValue = updated
                                 lastEmittedText = updated.text
@@ -872,6 +920,9 @@ private fun FormattingToolbar(
     onToggleMic: () -> Unit,
     onToggleLanguage: () -> Unit,
 ) {
+    val haptic = LocalHapticFeedback.current
+    fun tick() = haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -882,165 +933,236 @@ private fun FormattingToolbar(
         Row(
             modifier = Modifier
                 .clip(RoundedCornerShape(22.dp))
-                .background(theme.surfaceVariant.copy(alpha = 0.9f))
+                .background(theme.surfaceVariant.copy(alpha = if (theme.isDark) 0.92f else 0.96f))
+                .border(
+                    width = 1.dp,
+                    color = theme.textSecondary.copy(alpha = if (theme.isDark) 0.18f else 0.14f),
+                    shape = RoundedCornerShape(22.dp)
+                )
                 .horizontalScroll(rememberScrollState())
-                .padding(horizontal = 12.dp, vertical = 7.dp),
+                .padding(horizontal = 6.dp, vertical = 2.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
         ) {
-            // Bold button
-            Text(
-                text = "B",
-                color = theme.onSurface,
-                fontWeight = FontWeight.ExtraBold,
-                fontSize = 15.sp,
+            // Bold button (40dp touch target, centered compact 15sp text)
+            Box(
                 modifier = Modifier
-                    .clip(RoundedCornerShape(4.dp))
-                    .clickable { onFormat(FormatType.BOLD) }
-                    .padding(horizontal = 4.dp, vertical = 2.dp),
-            )
+                    .size(width = 34.dp, height = 40.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable {
+                        tick()
+                        onFormat(FormatType.BOLD)
+                    },
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = "B",
+                    color = theme.onSurface,
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 15.sp,
+                )
+            }
 
-            // Italic button
-            Text(
-                text = "I",
-                color = theme.onSurface,
-                fontStyle = FontStyle.Italic,
-                fontWeight = FontWeight.Bold,
-                fontSize = 15.sp,
+            // Italic button (40dp touch target, centered compact 15sp text)
+            Box(
                 modifier = Modifier
-                    .clip(RoundedCornerShape(4.dp))
-                    .clickable { onFormat(FormatType.ITALIC) }
-                    .padding(horizontal = 4.dp, vertical = 2.dp),
-            )
+                    .size(width = 34.dp, height = 40.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable {
+                        tick()
+                        onFormat(FormatType.ITALIC)
+                    },
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = "I",
+                    color = theme.onSurface,
+                    fontStyle = FontStyle.Italic,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 15.sp,
+                )
+            }
 
             // Divider
             Box(
                 modifier = Modifier
+                    .padding(horizontal = 2.dp)
                     .width(1.dp)
-                    .height(14.dp)
-                    .background(theme.textSecondary.copy(alpha = 0.3f))
+                    .height(16.dp)
+                    .background(theme.textSecondary.copy(alpha = 0.25f))
             )
 
             // Highlight 1: Acid Lime
             HighlightDot(
                 color = TextFormatHelper.Highlights.SwatchLime,
-                onClick = { onFormat(FormatType.HIGHLIGHT_1) }
+                onClick = {
+                    tick()
+                    onFormat(FormatType.HIGHLIGHT_1)
+                }
             )
 
             // Highlight 2: Sunset Coral
             HighlightDot(
                 color = TextFormatHelper.Highlights.SwatchCoral,
-                onClick = { onFormat(FormatType.HIGHLIGHT_2) }
+                onClick = {
+                    tick()
+                    onFormat(FormatType.HIGHLIGHT_2)
+                }
             )
 
             // Highlight 3: Cyber Sky
             HighlightDot(
                 color = TextFormatHelper.Highlights.SwatchSky,
-                onClick = { onFormat(FormatType.HIGHLIGHT_3) }
+                onClick = {
+                    tick()
+                    onFormat(FormatType.HIGHLIGHT_3)
+                }
             )
 
-            // Highlight 4: Deep Plum (Darker shade 1)
+            // Highlight 4: Deep Plum
             HighlightDot(
                 color = TextFormatHelper.Highlights.SwatchPlum,
-                onClick = { onFormat(FormatType.HIGHLIGHT_4) }
+                onClick = {
+                    tick()
+                    onFormat(FormatType.HIGHLIGHT_4)
+                }
             )
 
-            // Highlight 5: Forest Pine (Darker shade 2)
+            // Highlight 5: Forest Pine
             HighlightDot(
                 color = TextFormatHelper.Highlights.SwatchPine,
-                onClick = { onFormat(FormatType.HIGHLIGHT_5) }
+                onClick = {
+                    tick()
+                    onFormat(FormatType.HIGHLIGHT_5)
+                }
             )
 
             // Divider
             Box(
                 modifier = Modifier
+                    .padding(horizontal = 2.dp)
                     .width(1.dp)
-                    .height(14.dp)
-                    .background(theme.textSecondary.copy(alpha = 0.3f))
+                    .height(16.dp)
+                    .background(theme.textSecondary.copy(alpha = 0.25f))
             )
 
-            // Clear formatting
-            Icon(
-                painter = painterResource(id = R.drawable.ic_close),
-                contentDescription = "Clear format",
-                tint = theme.textSecondary.copy(alpha = 0.6f),
+            // Clear formatting (40dp touch target, 15dp icon)
+            Box(
                 modifier = Modifier
-                    .size(16.dp)
+                    .size(width = 34.dp, height = 40.dp)
                     .clip(CircleShape)
-                    .clickable(onClick = onClearFormat)
-                    .padding(2.dp),
-            )
-
-            // Divider
-            Box(
-                modifier = Modifier
-                    .width(1.dp)
-                    .height(14.dp)
-                    .background(theme.textSecondary.copy(alpha = 0.3f))
-            )
-
-            // Lock / Unlock toggle
-            Icon(
-                painter = painterResource(
-                    id = if (isLocked) R.drawable.ic_lock else R.drawable.ic_lock_open
-                ),
-                contentDescription = if (isLocked) "Private Note (Locked)" else "Public Note (Unlocked)",
-                tint = if (isLocked) theme.accent else theme.textSecondary.copy(alpha = 0.6f),
-                modifier = Modifier
-                    .size(16.dp)
-                    .clip(CircleShape)
-                    .clickable(onClick = onToggleLock)
-                    .padding(1.dp),
-            )
-
-            // Divider
-            Box(
-                modifier = Modifier
-                    .width(1.dp)
-                    .height(14.dp)
-                    .background(theme.textSecondary.copy(alpha = 0.3f))
-            )
-
-            // Language Toggle [ EN | HI ] right on the toolbar
-            Row(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(theme.background.copy(alpha = 0.5f))
-                    .clickable(onClick = onToggleLanguage)
-                    .padding(horizontal = 6.dp, vertical = 2.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(3.dp)
+                    .clickable {
+                        tick()
+                        onClearFormat()
+                    },
+                contentAlignment = Alignment.Center,
             ) {
-                Text(
-                    text = "EN",
-                    color = if (voiceLanguage == VoiceLanguage.ENGLISH) theme.accent else theme.textSecondary.copy(alpha = 0.45f),
-                    fontSize = 10.sp,
-                    fontWeight = if (voiceLanguage == VoiceLanguage.ENGLISH) FontWeight.ExtraBold else FontWeight.Normal
-                )
-                Text(
-                    text = "|",
-                    color = theme.textSecondary.copy(alpha = 0.3f),
-                    fontSize = 9.sp
-                )
-                Text(
-                    text = "HI",
-                    color = if (voiceLanguage == VoiceLanguage.HINDI) theme.accent else theme.textSecondary.copy(alpha = 0.45f),
-                    fontSize = 10.sp,
-                    fontWeight = if (voiceLanguage == VoiceLanguage.HINDI) FontWeight.ExtraBold else FontWeight.Normal
+                Icon(
+                    painter = painterResource(id = R.drawable.ic_close),
+                    contentDescription = "Clear format",
+                    tint = theme.textSecondary.copy(alpha = 0.65f),
+                    modifier = Modifier.size(15.dp)
                 )
             }
 
-            // Minimal Mic Button (Voice-to-Note)
-            Icon(
-                painter = painterResource(id = R.drawable.ic_mic),
-                contentDescription = if (isListening) "Stop listening" else "Voice to Note (${voiceLanguage.shortLabel})",
-                tint = if (isListening) theme.accent else theme.textSecondary.copy(alpha = 0.75f),
+            // Divider
+            Box(
                 modifier = Modifier
-                    .size(17.dp)
-                    .clip(CircleShape)
-                    .clickable(onClick = onToggleMic)
-                    .padding(1.dp),
+                    .padding(horizontal = 2.dp)
+                    .width(1.dp)
+                    .height(16.dp)
+                    .background(theme.textSecondary.copy(alpha = 0.25f))
             )
+
+            // Lock / Unlock toggle (40dp touch target, 16dp icon)
+            Box(
+                modifier = Modifier
+                    .size(width = 34.dp, height = 40.dp)
+                    .clip(CircleShape)
+                    .clickable {
+                        tick()
+                        onToggleLock()
+                    },
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    painter = painterResource(
+                        id = if (isLocked) R.drawable.ic_lock else R.drawable.ic_lock_open
+                    ),
+                    contentDescription = if (isLocked) "Private Note (Locked)" else "Public Note (Unlocked)",
+                    tint = if (isLocked) theme.accent else theme.textSecondary.copy(alpha = 0.65f),
+                    modifier = Modifier.size(16.dp)
+                )
+            }
+
+            // Divider
+            Box(
+                modifier = Modifier
+                    .padding(horizontal = 2.dp)
+                    .width(1.dp)
+                    .height(16.dp)
+                    .background(theme.textSecondary.copy(alpha = 0.25f))
+            )
+
+            // Language Toggle [ EN | HI ] right on the toolbar (40dp touch target, compact pill)
+            Box(
+                modifier = Modifier
+                    .height(40.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable {
+                        tick()
+                        onToggleLanguage()
+                    }
+                    .padding(horizontal = 2.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Row(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(theme.background.copy(alpha = if (theme.isDark) 0.55f else 0.75f))
+                        .border(1.dp, theme.textSecondary.copy(alpha = 0.16f), RoundedCornerShape(6.dp))
+                        .padding(horizontal = 6.dp, vertical = 3.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(3.dp)
+                ) {
+                    Text(
+                        text = "EN",
+                        color = if (voiceLanguage == VoiceLanguage.ENGLISH) theme.accent else theme.textSecondary.copy(alpha = 0.5f),
+                        fontSize = 10.sp,
+                        fontWeight = if (voiceLanguage == VoiceLanguage.ENGLISH) FontWeight.ExtraBold else FontWeight.Medium
+                    )
+                    Text(
+                        text = "|",
+                        color = theme.textSecondary.copy(alpha = 0.3f),
+                        fontSize = 9.sp
+                    )
+                    Text(
+                        text = "HI",
+                        color = if (voiceLanguage == VoiceLanguage.HINDI) theme.accent else theme.textSecondary.copy(alpha = 0.5f),
+                        fontSize = 10.sp,
+                        fontWeight = if (voiceLanguage == VoiceLanguage.HINDI) FontWeight.ExtraBold else FontWeight.Medium
+                    )
+                }
+            }
+
+            // Minimal Mic Button (Voice-to-Note) (40dp touch target, 16dp icon)
+            Box(
+                modifier = Modifier
+                    .size(width = 36.dp, height = 40.dp)
+                    .clip(CircleShape)
+                    .clickable {
+                        tick()
+                        onToggleMic()
+                    },
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    painter = painterResource(id = R.drawable.ic_mic),
+                    contentDescription = if (isListening) "Stop listening" else "Voice to Note (${voiceLanguage.shortLabel})",
+                    tint = if (isListening) theme.accent else theme.textSecondary.copy(alpha = 0.8f),
+                    modifier = Modifier.size(16.dp)
+                )
+            }
         }
     }
 }
@@ -1052,11 +1174,18 @@ private fun HighlightDot(
 ) {
     Box(
         modifier = Modifier
-            .size(18.dp)
-            .clip(CircleShape)
-            .background(color)
-            .clickable(onClick = onClick)
-    )
+            .size(width = 28.dp, height = 40.dp)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(
+            modifier = Modifier
+                .size(15.dp)
+                .clip(CircleShape)
+                .background(color)
+                .border(0.5.dp, Color.Black.copy(alpha = 0.18f), CircleShape)
+        )
+    }
 }
 
 @Composable

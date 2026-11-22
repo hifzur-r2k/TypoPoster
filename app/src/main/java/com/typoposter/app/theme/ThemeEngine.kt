@@ -75,13 +75,12 @@ data class PosterTheme(
     val bodyWeight: FontWeight = FontWeight.Normal,
     val surfaceVariant: Color,   // for UI elements (cards, sheets)
     val onSurface: Color,        // text on surfaceVariant
-) {
-    val isDark: Boolean get() = id != 1
-}
+    val isDark: Boolean = true,  // light vs dark theme indicator for system bars & contrast
+)
 
 object ThemeEngine {
 
-    // Theme 1 ── The Executive
+    // Theme 1 ── The Executive (Dark Minimal)
     val Executive = PosterTheme(
         id = 0,
         name = "The Executive",
@@ -95,9 +94,10 @@ object ThemeEngine {
         bodyWeight = FontWeight.Normal,
         surfaceVariant = Color(0xFF1A1A1A),
         onSurface = Color(0xFFE0E0E0),
+        isDark = true,
     )
 
-    // Theme 2 ── The Editorial
+    // Theme 2 ── The Editorial (Light Paper & Crimson)
     val Editorial = PosterTheme(
         id = 1,
         name = "The Editorial",
@@ -111,9 +111,10 @@ object ThemeEngine {
         bodyWeight = FontWeight.Normal,
         surfaceVariant = Color(0xFFF0EDE6),
         onSurface = Color(0xFF3A3A3A),
+        isDark = false,
     )
 
-    // Theme 3 ── The Blueprint
+    // Theme 3 ── The Blueprint (Dark Navy)
     val Blueprint = PosterTheme(
         id = 2,
         name = "The Blueprint",
@@ -127,9 +128,61 @@ object ThemeEngine {
         bodyWeight = FontWeight.Light,
         surfaceVariant = Color(0xFF1B2838),
         onSurface = Color(0xFFE0E8F0),
+        isDark = true,
     )
 
-    val allThemes = listOf(Executive, Editorial, Blueprint)
+    // Theme 4 ── The Terra (Warm Earthy Light)
+    val Terra = PosterTheme(
+        id = 3,
+        name = "The Terra",
+        background = Color(0xFFF6F1EB),     // warm terracotta paper
+        textPrimary = Color(0xFF2A2320),     // deep bistre
+        textSecondary = Color(0xFF7D726D),   // soft clay
+        accent = Color(0xFFC25934),          // burnt sienna
+        headerFont = PlayfairDisplayFamily,
+        bodyFont = LoraFamily,
+        headerWeight = FontWeight.Bold,
+        bodyWeight = FontWeight.Normal,
+        surfaceVariant = Color(0xFFEAE2D8),
+        onSurface = Color(0xFF3D3430),
+        isDark = false,
+    )
+
+    // Theme 5 ── The Matcha (Botanical Sage Light)
+    val Matcha = PosterTheme(
+        id = 4,
+        name = "The Matcha",
+        background = Color(0xFFF3F6F0),     // pale celadon cream
+        textPrimary = Color(0xFF222E25),     // deep forest charcoal
+        textSecondary = Color(0xFF6F7E73),   // sage grey
+        accent = Color(0xFF346843),          // matcha green
+        headerFont = MontserratFamily,
+        bodyFont = LoraFamily,
+        headerWeight = FontWeight.SemiBold,
+        bodyWeight = FontWeight.Normal,
+        surfaceVariant = Color(0xFFE5ECE0),
+        onSurface = Color(0xFF2C3B30),
+        isDark = false,
+    )
+
+    // Theme 6 ── The Mono (Dark Minimalist Platinum & Amber)
+    val MonoNoir = PosterTheme(
+        id = 5,
+        name = "The Mono",
+        background = Color(0xFF121212),     // pure dark ink
+        textPrimary = Color(0xFFEEEEEE),     // platinum white
+        textSecondary = Color(0xFF888888),   // neutral grey
+        accent = Color(0xFFD4AF37),          // muted gold
+        headerFont = InterFamily,
+        bodyFont = RobotoMonoFamily,
+        headerWeight = FontWeight.SemiBold,
+        bodyWeight = FontWeight.Normal,
+        surfaceVariant = Color(0xFF1E1E1E),
+        onSurface = Color(0xFFE0E0E0),
+        isDark = true,
+    )
+
+    val allThemes = listOf(Executive, Editorial, Blueprint, Terra, Matcha, MonoNoir)
 
     fun getTheme(index: Int): PosterTheme =
         allThemes.getOrElse(index) { Executive }
