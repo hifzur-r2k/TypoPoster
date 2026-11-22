@@ -58,8 +58,11 @@ class NoteViewModel(application: Application) : AndroidViewModel(application) {
                 } else {
                     active
                 }
+                val updatedNotesList = notesList.map { note ->
+                    if (note.id == resolvedActive.id) resolvedActive else note
+                }
                 _uiState.value.copy(
-                    notes = notesList,
+                    notes = updatedNotesList,
                     activeNote = resolvedActive,
                     theme = ThemeEngine.getTheme(resolvedActive.themeIndex),
                 )
@@ -112,13 +115,16 @@ class NoteViewModel(application: Application) : AndroidViewModel(application) {
             updatedAt = System.currentTimeMillis()
         )
         // Instant in-memory state update for 0ms editing latency
-        _uiState.update { it.copy(activeNote = current) }
+        _uiState.update { state ->
+            val updatedNotes = state.notes.map { if (it.id == current.id) current else it }
+            state.copy(activeNote = current, notes = updatedNotes)
+        }
 
-        // Debounce disk persistence and widget broadcast by 250ms
+        // Debounce disk persistence and widget broadcast by 350ms
         // so rapid typing or holding down backspace runs at full 120Hz without I/O stutter
         saveTextJob?.cancel()
         saveTextJob = viewModelScope.launch {
-            delay(250L)
+            delay(350L)
             store.saveNote(current)
             NoteWidget.updateWidgetForNote(getApplication(), current)
         }

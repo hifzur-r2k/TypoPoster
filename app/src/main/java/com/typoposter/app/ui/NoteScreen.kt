@@ -10,6 +10,7 @@ import android.util.Log
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
@@ -102,10 +103,40 @@ fun NoteScreen(
         mutableStateOf(activeNote.content)
     }
 
+    var lastLocalEditTime by remember(activeNote.id) {
+        mutableStateOf(0L)
+    }
+
+    var activeFontSize by remember(activeNote.id) {
+        mutableStateOf(autoScaleFontSize(activeNote.content.length))
+    }
+    var activeLineHeight by remember(activeNote.id) {
+        mutableStateOf(autoScaleLineHeight(activeNote.content.length))
+    }
+    var activeFontWeight by remember(activeNote.id) {
+        mutableStateOf(if (activeNote.content.length <= 50) FontWeight.Medium else theme.bodyWeight)
+    }
+
+    // Debounce font size, line height, and font weight changes during active typing/deleting
+    // so TextStyle remains 100% stable while holding down backspace (prevents IME input restarts)
+    LaunchedEffect(textFieldValue.text.length) {
+        val targetSize = autoScaleFontSize(textFieldValue.text.length)
+        val targetLineHeight = autoScaleLineHeight(textFieldValue.text.length)
+        val targetWeight = if (textFieldValue.text.length <= 50) FontWeight.Medium else theme.bodyWeight
+
+        if (targetSize != activeFontSize || targetLineHeight != activeLineHeight || targetWeight != activeFontWeight) {
+            delay(400L) // Settle time: wait until rapid backspacing / typing pauses
+            activeFontSize = targetSize
+            activeLineHeight = targetLineHeight
+            activeFontWeight = targetWeight
+        }
+    }
+
     LaunchedEffect(activeNote.content) {
         // Prevent typing echo: only update if activeNote.content changed externally,
-        // never clobber active typing/deleting
-        if (activeNote.content != lastEmittedText && activeNote.content != textFieldValue.text) {
+        // and user is NOT actively typing/deleting (protects against delayed DataStore echoes)
+        val isActivelyEditing = (System.currentTimeMillis() - lastLocalEditTime) < 600L
+        if (!isActivelyEditing && activeNote.content != lastEmittedText && activeNote.content != textFieldValue.text) {
             lastEmittedText = activeNote.content
             val newCursor = activeNote.content.length
             textFieldValue = TextFieldValue(
@@ -138,6 +169,7 @@ fun NoteScreen(
                     val converted = com.typoposter.app.voice.SpokenDateParser.convert(spoken)
                     val mathParsed = com.typoposter.app.voice.SpokenMathParser.parse(converted)
                     val updated = insertSpeechText(textFieldValue, mathParsed)
+                    lastLocalEditTime = System.currentTimeMillis()
                     textFieldValue = updated
                     lastEmittedText = updated.text
                     onTextChanged(updated.text)
@@ -230,6 +262,7 @@ fun NoteScreen(
         val state = speechState
         if (state is SpeechState.FinalResult && state.convertedText.isNotBlank()) {
             val updated = insertSpeechText(textFieldValue, state.convertedText)
+            lastLocalEditTime = System.currentTimeMillis()
             textFieldValue = updated
             lastEmittedText = updated.text
             onTextChanged(updated.text)
@@ -620,7 +653,7 @@ fun NoteScreen(
                         onAuthenticate = { onUnlockRequested(activeNote.id) }
                     )
                 } else {
-                    if (activeNote.content.isEmpty()) {
+                    if (textFieldValue.text.isEmpty()) {
                         Text(
                             text = "What's on your mind today?",
                             color = secondaryColor.value.copy(alpha = 0.4f),
@@ -634,6 +667,7 @@ fun NoteScreen(
                     BasicTextField(
                         value = textFieldValue,
                         onValueChange = { newValue ->
+                            lastLocalEditTime = System.currentTimeMillis()
                             textFieldValue = newValue
                             if (newValue.text != lastEmittedText) {
                                 lastEmittedText = newValue.text
@@ -648,11 +682,10 @@ fun NoteScreen(
                         },
                         textStyle = TextStyle(
                             color = textColor.value,
-                            fontSize = autoScaleFontSize(textFieldValue.text.length),
+                            fontSize = activeFontSize,
                             fontFamily = theme.bodyFont,
-                            fontWeight = if (textFieldValue.text.length <= 50) FontWeight.Medium
-                            else theme.bodyWeight,
-                            lineHeight = autoScaleLineHeight(textFieldValue.text.length),
+                            fontWeight = activeFontWeight,
+                            lineHeight = activeLineHeight,
                             letterSpacing = 0.3.sp,
                         ),
                         cursorBrush = SolidColor(accentColor.value),
@@ -682,6 +715,7 @@ fun NoteScreen(
                             onApply = {
                                 haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                                 val updated = SmartCalculatorHelper.applySuggestion(textFieldValue, calcSuggestion)
+                                lastLocalEditTime = System.currentTimeMillis()
                                 textFieldValue = updated
                                 lastEmittedText = updated.text
                                 onTextChanged(updated.text)
@@ -737,12 +771,14 @@ fun NoteScreen(
                 voiceLanguage = voiceLanguage,
                 onFormat = { format ->
                     val updated = TextFormatHelper.toggleFormat(textFieldValue, format)
+                    lastLocalEditTime = System.currentTimeMillis()
                     textFieldValue = updated
                     lastEmittedText = updated.text
                     onTextChanged(updated.text)
                 },
                 onClearFormat = {
                     val updated = TextFormatHelper.clearFormatting(textFieldValue)
+                    lastLocalEditTime = System.currentTimeMillis()
                     textFieldValue = updated
                     lastEmittedText = updated.text
                     onTextChanged(updated.text)

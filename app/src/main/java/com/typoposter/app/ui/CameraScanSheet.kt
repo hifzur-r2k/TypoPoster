@@ -122,6 +122,19 @@ fun CameraScanSheet(
     var isScanning by remember { mutableStateOf(false) }
     var isCopied by remember { mutableStateOf(false) }
 
+    var activeFontSize by remember { mutableStateOf(if (editedText.length <= 80) 18.sp else 15.sp) }
+    var activeLineHeight by remember { mutableStateOf(if (editedText.length <= 80) 26.sp else 22.sp) }
+
+    LaunchedEffect(editedText.length) {
+        val targetSize = if (editedText.length <= 80) 18.sp else 15.sp
+        val targetLineHeight = if (editedText.length <= 80) 26.sp else 22.sp
+        if (targetSize != activeFontSize || targetLineHeight != activeLineHeight) {
+            delay(400L)
+            activeFontSize = targetSize
+            activeLineHeight = targetLineHeight
+        }
+    }
+
     fun processImage(
         uri: Uri,
         additionalRotation: Int = 0,
@@ -749,10 +762,10 @@ fun CameraScanSheet(
                                 .verticalScroll(textScrollState),
                             textStyle = TextStyle(
                                 color = theme.textPrimary,
-                                fontSize = if (editedText.length <= 80) 18.sp else 15.sp,
+                                fontSize = activeFontSize,
                                 fontFamily = theme.bodyFont,
                                 fontWeight = theme.bodyWeight,
-                                lineHeight = if (editedText.length <= 80) 26.sp else 22.sp,
+                                lineHeight = activeLineHeight,
                             ),
                             visualTransformation = remember(theme) {
                                 RichTextVisualTransformation(theme)
