@@ -70,8 +70,9 @@ dependencies {
     implementation("androidx.glance:glance-appwidget:1.0.0")
     implementation("androidx.glance:glance-material3:1.0.0")
 
-    // Google ML Kit Text Recognition (On-device OCR)
+    // Google ML Kit Text Recognition (On-device OCR: Latin & Devanagari/Hindi)
     implementation("com.google.mlkit:text-recognition:16.0.0")
+    implementation("com.google.mlkit:text-recognition-devanagari:16.0.1")
 
     // Biometric Authentication (Fingerprint & Device PIN/Pattern)
     implementation("androidx.biometric:biometric:1.1.0")

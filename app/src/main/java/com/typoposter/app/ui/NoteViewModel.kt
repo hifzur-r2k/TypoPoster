@@ -49,8 +49,12 @@ class NoteViewModel(application: Application) : AndroidViewModel(application) {
                     ?: notesList.firstOrNull()
                     ?: Note()
                 val currentActive = _uiState.value.activeNote
-                val resolvedActive = if (active.id == currentActive.id && currentActive.updatedAt > active.updatedAt) {
-                    currentActive
+                val resolvedActive = if (active.id == currentActive.id && currentActive.updatedAt >= active.updatedAt) {
+                    currentActive.copy(
+                        title = active.title,
+                        themeIndex = active.themeIndex,
+                        isLocked = active.isLocked
+                    )
                 } else {
                     active
                 }

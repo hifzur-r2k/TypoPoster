@@ -21,6 +21,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -28,8 +29,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -38,10 +41,12 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import com.typoposter.app.R
+import com.typoposter.app.ocr.OcrLanguage
 import com.typoposter.app.ocr.OcrResult
 import com.typoposter.app.ocr.TextRecognitionHelper
 import com.typoposter.app.theme.PosterTheme
 import com.typoposter.app.theme.RichTextVisualTransformation
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.io.File
 
@@ -53,6 +58,7 @@ enum class ScanApplyMode {
 
 enum class OcrFormatMode {
     POINTWISE,   // Point-wise table & structured document (Default)
+    CLEAN,       // Clean structured document for receipts, notes, rates, lists
     GRID_TABLE,  // Markdown grid table & structured document
     SMART_FLOW,  // Clean paragraph flow with list points
     EXACT_LINES  // Raw physical lines as detected
@@ -68,34 +74,47 @@ fun CameraScanSheet(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val clipboardManager = LocalClipboardManager.current
 
-    var activeUri by remember { mutableStateOf<Uri?>(null) }
-    var manualRotation by remember { mutableStateOf(0) }
+    // State persisted across configuration / process recreation
+    var activeUriString by rememberSaveable { mutableStateOf<String?>(null) }
+    var tempPhotoUriString by rememberSaveable { mutableStateOf<String?>(null) }
+    var manualRotation by rememberSaveable { mutableStateOf(0) }
+    var selectedLanguage by rememberSaveable { mutableStateOf(OcrLanguage.ENGLISH) }
+    var editedText by rememberSaveable { mutableStateOf("") }
+    var errorMessage by rememberSaveable { mutableStateOf<String?>(null) }
+
+    val activeUri = activeUriString?.let { Uri.parse(it) }
+
     var ocrResult by remember { mutableStateOf<OcrResult?>(null) }
     var formatMode by remember { mutableStateOf(OcrFormatMode.POINTWISE) }
-    var editedText by remember { mutableStateOf("") }
     var isScanning by remember { mutableStateOf(false) }
-    var errorMessage by remember { mutableStateOf<String?>(null) }
-    var tempPhotoUri by remember { mutableStateOf<Uri?>(null) }
+    var isCopied by remember { mutableStateOf(false) }
 
-    fun processImage(uri: Uri, additionalRotation: Int = 0) {
-        activeUri = uri
+    fun processImage(
+        uri: Uri,
+        additionalRotation: Int = 0,
+        language: OcrLanguage = selectedLanguage
+    ) {
+        activeUriString = uri.toString()
         manualRotation = additionalRotation
+        selectedLanguage = language
         isScanning = true
         errorMessage = null
         scope.launch {
-            val result = TextRecognitionHelper.extractText(context, uri, additionalRotation)
+            val result = TextRecognitionHelper.extractText(context, uri, additionalRotation, language)
             isScanning = false
             result.onSuccess { res ->
                 ocrResult = res
                 val chosenText = when (formatMode) {
                     OcrFormatMode.POINTWISE -> res.pointwiseText
+                    OcrFormatMode.CLEAN -> res.cleanText
                     OcrFormatMode.GRID_TABLE -> res.gridTableText
                     OcrFormatMode.SMART_FLOW -> res.smartFlowText
                     OcrFormatMode.EXACT_LINES -> res.exactText
                 }
                 if (chosenText.isBlank()) {
-                    errorMessage = "No readable text detected. If the image is sideways or blurry, try the Rotate button or take a closer photo."
+                    errorMessage = "No readable text detected. If the image is sideways or blurry, tap ROTATE 90° or switch language."
                 } else {
                     editedText = chosenText
                 }
@@ -108,8 +127,9 @@ fun CameraScanSheet(
     val cameraLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.TakePicture()
     ) { success ->
-        if (success && tempPhotoUri != null) {
-            processImage(tempPhotoUri!!, 0)
+        if (success && tempPhotoUriString != null) {
+            val uri = Uri.parse(tempPhotoUriString)
+            processImage(uri, 0, selectedLanguage)
         }
     }
 
@@ -118,7 +138,7 @@ fun CameraScanSheet(
     ) { isGranted ->
         if (isGranted) {
             val uri = createTempImageUri(context)
-            tempPhotoUri = uri
+            tempPhotoUriString = uri.toString()
             cameraLauncher.launch(uri)
         } else {
             errorMessage = "Camera permission is required to capture photos."
@@ -134,7 +154,7 @@ fun CameraScanSheet(
 
         if (hasPermission) {
             val uri = createTempImageUri(context)
-            tempPhotoUri = uri
+            tempPhotoUriString = uri.toString()
             cameraLauncher.launch(uri)
         } else {
             permissionLauncher.launch(Manifest.permission.CAMERA)
@@ -145,13 +165,13 @@ fun CameraScanSheet(
         contract = ActivityResultContracts.GetContent()
     ) { uri ->
         if (uri != null) {
-            processImage(uri, 0)
+            processImage(uri, 0, selectedLanguage)
         }
     }
 
     // Auto-launch camera when requested (e.g. from Widget camera icon tap)
     LaunchedEffect(autoLaunchCamera) {
-        if (autoLaunchCamera) {
+        if (autoLaunchCamera && activeUriString == null) {
             startCameraCapture()
         }
     }
@@ -205,31 +225,93 @@ fun CameraScanSheet(
                     )
                 }
 
-                // Dismiss / Close
-                Text(
-                    text = "CLOSE",
-                    color = theme.textSecondary.copy(alpha = 0.7f),
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Medium,
-                    letterSpacing = 1.sp,
-                    modifier = Modifier.clickable(onClick = onDismiss),
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    // EN | HI Script Toggle
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(theme.background)
+                            .border(1.dp, theme.textSecondary.copy(alpha = 0.2f), RoundedCornerShape(8.dp))
+                            .padding(horizontal = 3.dp, vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        val isEn = selectedLanguage == OcrLanguage.ENGLISH
+                        Text(
+                            text = "EN",
+                            color = if (isEn) theme.accent else theme.textSecondary.copy(alpha = 0.6f),
+                            fontSize = 10.sp,
+                            fontFamily = theme.headerFont,
+                            fontWeight = if (isEn) FontWeight.Bold else FontWeight.Medium,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(5.dp))
+                                .background(if (isEn) theme.accent.copy(alpha = 0.16f) else Color.Transparent)
+                                .clickable {
+                                    if (selectedLanguage != OcrLanguage.ENGLISH) {
+                                        selectedLanguage = OcrLanguage.ENGLISH
+                                        activeUri?.let { processImage(it, manualRotation, OcrLanguage.ENGLISH) }
+                                    }
+                                }
+                                .padding(horizontal = 5.dp, vertical = 2.dp),
+                        )
+                        Text(
+                            text = "•",
+                            color = theme.textSecondary.copy(alpha = 0.3f),
+                            fontSize = 8.sp,
+                            modifier = Modifier.padding(horizontal = 1.dp)
+                        )
+                        val isHi = selectedLanguage == OcrLanguage.HINDI
+                        Text(
+                            text = "HI",
+                            color = if (isHi) theme.accent else theme.textSecondary.copy(alpha = 0.6f),
+                            fontSize = 10.sp,
+                            fontFamily = theme.headerFont,
+                            fontWeight = if (isHi) FontWeight.Bold else FontWeight.Medium,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(5.dp))
+                                .background(if (isHi) theme.accent.copy(alpha = 0.16f) else Color.Transparent)
+                                .clickable {
+                                    if (selectedLanguage != OcrLanguage.HINDI) {
+                                        selectedLanguage = OcrLanguage.HINDI
+                                        activeUri?.let { processImage(it, manualRotation, OcrLanguage.HINDI) }
+                                    }
+                                }
+                                .padding(horizontal = 5.dp, vertical = 2.dp),
+                        )
+                    }
+
+                    // Dismiss / Close
+                    Text(
+                        text = "CLOSE",
+                        color = theme.textSecondary.copy(alpha = 0.7f),
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Medium,
+                        letterSpacing = 1.sp,
+                        modifier = Modifier.clickable(onClick = onDismiss),
+                    )
+                }
             }
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            // ── Error Message Banner ─────────────────────
+            // ── Theme-Matched Error Message Banner ───────
             if (errorMessage != null) {
+                val errorBg = if (theme.isDark) Color(0xFF382218) else Color(0xFFFDEEE6)
+                val errorBorder = if (theme.isDark) Color(0xFF6E3E28) else Color(0xFFF5C6B0)
+                val errorTextColor = if (theme.isDark) Color(0xFFFFB288) else Color(0xFF9E3812)
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(12.dp))
-                        .background(Color(0xFF3B1818))
+                        .background(errorBg)
+                        .border(1.dp, errorBorder, RoundedCornerShape(12.dp))
                         .padding(12.dp),
                 ) {
                     Text(
                         text = errorMessage ?: "",
-                        color = Color(0xFFFF8B8B),
+                        color = errorTextColor,
                         fontSize = 13.sp,
                         lineHeight = 18.sp,
                     )
@@ -264,8 +346,102 @@ fun CameraScanSheet(
                 }
             }
 
+            // ── Scanned Image Preview & ROTATE 90° Bar ─────
+            // Visible whenever activeUri != null && !isScanning (even if OCR returned no text!)
+            if (activeUri != null && !isScanning) {
+                val previewBitmap = ocrResult?.bitmap
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(theme.background)
+                        .padding(10.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        if (previewBitmap != null) {
+                            Image(
+                                bitmap = previewBitmap.asImageBitmap(),
+                                contentDescription = "Captured Document",
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier
+                                    .size(44.dp)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .border(1.dp, theme.textSecondary.copy(alpha = 0.2f), RoundedCornerShape(8.dp)),
+                            )
+                        } else {
+                            Box(
+                                modifier = Modifier
+                                    .size(44.dp)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(theme.surfaceVariant),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    painter = painterResource(id = R.drawable.ic_camera),
+                                    contentDescription = null,
+                                    tint = theme.textSecondary,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                        }
+                        Column {
+                            Text(
+                                text = "Scanned Image",
+                                color = theme.textPrimary,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            Text(
+                                text = if (manualRotation != 0) "Rotated +$manualRotation°" else "Auto-oriented",
+                                color = theme.textSecondary,
+                                fontSize = 10.sp,
+                            )
+                        }
+                    }
+
+                    // Rotate 90° button: immediately accessible to re-scan sideways photos
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(theme.surfaceVariant)
+                            .clickable {
+                                processImage(activeUri, (manualRotation + 90) % 360, selectedLanguage)
+                            }
+                            .padding(horizontal = 10.dp, vertical = 6.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(5.dp)
+                        ) {
+                            Icon(
+                                painter = painterResource(id = R.drawable.ic_rotate),
+                                contentDescription = "Rotate",
+                                tint = theme.accent,
+                                modifier = Modifier.size(13.dp)
+                            )
+                            Text(
+                                text = "ROTATE 90°",
+                                color = theme.accent,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                letterSpacing = 0.5.sp,
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+            }
+
             // ── Capture Options (Camera & Gallery) ─────────
-            if (editedText.isEmpty() && !isScanning) {
+            // Visible when no photo is active, or if photo yielded no text
+            if ((activeUri == null || editedText.isEmpty()) && !isScanning) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -278,7 +454,7 @@ fun CameraScanSheet(
                             .background(theme.background)
                             .border(1.dp, theme.accent.copy(alpha = 0.3f), RoundedCornerShape(16.dp))
                             .clickable { startCameraCapture() }
-                            .padding(vertical = 22.dp, horizontal = 12.dp),
+                            .padding(vertical = 20.dp, horizontal = 12.dp),
                         contentAlignment = Alignment.Center,
                     ) {
                         Column(
@@ -292,7 +468,7 @@ fun CameraScanSheet(
                                 modifier = Modifier.size(26.dp)
                             )
                             Text(
-                                text = "Take Photo",
+                                text = if (activeUri != null) "Retake Photo" else "Take Photo",
                                 color = theme.textPrimary,
                                 fontSize = 14.sp,
                                 fontWeight = FontWeight.SemiBold,
@@ -314,7 +490,7 @@ fun CameraScanSheet(
                             .clip(RoundedCornerShape(16.dp))
                             .background(theme.background)
                             .clickable { galleryLauncher.launch("image/*") }
-                            .padding(vertical = 22.dp, horizontal = 12.dp),
+                            .padding(vertical = 20.dp, horizontal = 12.dp),
                         contentAlignment = Alignment.Center,
                     ) {
                         Column(
@@ -349,82 +525,7 @@ fun CameraScanSheet(
 
             // ── Scanned Text Result & Typographic Controls ──
             if (editedText.isNotEmpty()) {
-                // Image preview & Orientation helper row
-                val previewBitmap = ocrResult?.bitmap
-                if (previewBitmap != null) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(14.dp))
-                            .background(theme.background)
-                            .padding(10.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(10.dp),
-                        ) {
-                            Image(
-                                bitmap = previewBitmap.asImageBitmap(),
-                                contentDescription = "Captured Document",
-                                contentScale = ContentScale.Crop,
-                                modifier = Modifier
-                                    .size(44.dp)
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .border(1.dp, theme.textSecondary.copy(alpha = 0.2f), RoundedCornerShape(8.dp)),
-                            )
-                            Column {
-                                Text(
-                                    text = "Scanned Image",
-                                    color = theme.textPrimary,
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                )
-                                Text(
-                                    text = if (manualRotation != 0) "Rotated +$manualRotation°" else "Auto-oriented",
-                                    color = theme.textSecondary,
-                                    fontSize = 10.sp,
-                                )
-                            }
-                        }
-
-                        // Rotate button (critical if shot in landscape/desk orientation)
-                        Box(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(theme.surfaceVariant)
-                                .clickable {
-                                    activeUri?.let { processImage(it, (manualRotation + 90) % 360) }
-                                }
-                                .padding(horizontal = 10.dp, vertical = 6.dp),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(5.dp)
-                            ) {
-                                Icon(
-                                    painter = painterResource(id = R.drawable.ic_rotate),
-                                    contentDescription = "Rotate",
-                                    tint = theme.accent,
-                                    modifier = Modifier.size(13.dp)
-                                )
-                                Text(
-                                    text = "ROTATE 90°",
-                                    color = theme.accent,
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    letterSpacing = 0.5.sp,
-                                )
-                            }
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(12.dp))
-                }
-
-                // Mode Selector: Smart Flow vs Exact Lines
+                // Mode Selector: Points, Grid, Flow, Raw
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -472,6 +573,26 @@ fun CameraScanSheet(
                                     fontWeight = if (isPoints) FontWeight.Bold else FontWeight.Normal,
                                 )
                             }
+                        }
+
+                        // Clean Structured Mode
+                        val isClean = formatMode == OcrFormatMode.CLEAN
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(if (isClean) theme.accent.copy(alpha = 0.22f) else theme.background)
+                                .clickable {
+                                    formatMode = OcrFormatMode.CLEAN
+                                    ocrResult?.let { editedText = it.cleanText }
+                                }
+                                .padding(horizontal = 7.dp, vertical = 4.dp),
+                        ) {
+                            Text(
+                                text = "Clean",
+                                color = if (isClean) theme.accent else theme.textSecondary,
+                                fontSize = 10.sp,
+                                fontWeight = if (isClean) FontWeight.Bold else FontWeight.Normal,
+                            )
                         }
 
                         // Grid Table
@@ -601,25 +722,52 @@ fun CameraScanSheet(
                                 fontSize = 11.sp,
                             )
 
-                            // Re-take photo button
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(4.dp),
-                                modifier = Modifier.clickable { startCameraCapture() }
+                                horizontalArrangement = Arrangement.spacedBy(14.dp),
                             ) {
-                                Icon(
-                                    painter = painterResource(id = R.drawable.ic_refresh),
-                                    contentDescription = "Retake",
-                                    tint = theme.accent,
-                                    modifier = Modifier.size(12.dp)
-                                )
-                                Text(
-                                    text = "RETAKE",
-                                    color = theme.accent,
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    letterSpacing = 1.sp,
-                                )
+                                // 1-Tap Copy Button (Flips to COPIED ✓ for 1.5s)
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                    modifier = Modifier.clickable {
+                                        clipboardManager.setText(AnnotatedString(editedText))
+                                        isCopied = true
+                                        scope.launch {
+                                            delay(1500L)
+                                            isCopied = false
+                                        }
+                                    }
+                                ) {
+                                    Text(
+                                        text = if (isCopied) "COPIED ✓" else "COPY",
+                                        color = if (isCopied) theme.accent else theme.textSecondary,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        letterSpacing = 1.sp,
+                                    )
+                                }
+
+                                // Re-take photo button
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                    modifier = Modifier.clickable { startCameraCapture() }
+                                ) {
+                                    Icon(
+                                        painter = painterResource(id = R.drawable.ic_refresh),
+                                        contentDescription = "Retake",
+                                        tint = theme.accent,
+                                        modifier = Modifier.size(12.dp)
+                                    )
+                                    Text(
+                                        text = "RETAKE",
+                                        color = theme.accent,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        letterSpacing = 1.sp,
+                                    )
+                                }
                             }
                         }
                     }
@@ -741,13 +889,24 @@ fun CameraScanSheet(
 }
 
 private fun createTempImageUri(context: Context): Uri {
+    cleanupStaleScanFiles(context)
     val tempFile = File.createTempFile("scan_", ".jpg", context.cacheDir).apply {
         createNewFile()
-        deleteOnExit()
     }
     return FileProvider.getUriForFile(
         context,
         "${context.packageName}.fileprovider",
         tempFile
     )
+}
+
+private fun cleanupStaleScanFiles(context: Context) {
+    try {
+        val oneHourAgo = System.currentTimeMillis() - 3600_000L
+        context.cacheDir.listFiles { file ->
+            file.name.startsWith("scan_") && file.name.endsWith(".jpg") && file.lastModified() < oneHourAgo
+        }?.forEach { staleFile ->
+            staleFile.delete()
+        }
+    } catch (_: Exception) {}
 }
